@@ -18,6 +18,7 @@ end
 
 local lastCycleStatus = { crafting = {}, requested = {}, failed = {} }
 local cachedStock = {}
+local serializedStockCache = ""
 
 local gpu = component.isAvailable("gpu") and component.gpu or nil
 local screenW, screenH = 50, 16
@@ -82,7 +83,7 @@ end
 
 local function handleModem(_, _, _, _, _, msg)
   if msg == "requeststock" then
-    tunnel.send(serialization.serialize({ stock = cachedStock, status = lastCycleStatus }))
+    tunnel.send(serializedStockCache)
     return
   end
 if msg:sub(1, 8) == "setsleep" then
@@ -110,6 +111,7 @@ end
 
 local function mainLoop()
   cachedStock = stock()
+  serializedStockCache = serialization.serialize({ stock = cachedStock, status = lastCycleStatus })
   event.listen("modem_message", handleModem)
   while true do
     os.sleep(currentSleep)
@@ -150,6 +152,7 @@ local function mainLoop()
       if items[label] or fluids[label] then managedActive[label] = count end
     end
     lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed }
+    serializedStockCache = serialization.serialize({ stock = cachedStock, status = lastCycleStatus })
     drawScreen(active, cycleRequested, cycleFailed)
     logBuffer = {}
   end
