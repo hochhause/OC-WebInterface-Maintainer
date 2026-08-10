@@ -298,21 +298,26 @@ table input[type="text"] {
 
 /* Stable column widths to prevent layout shifts */
 table th:nth-child(1), table td:nth-child(1) {
-  width: 110px;
+  width: 36px;
+  text-align: center;
+  padding-right: 0;
 }
 table th:nth-child(2), table td:nth-child(2) {
-  /* Flexible */
+  width: 110px;
 }
 table th:nth-child(3), table td:nth-child(3) {
-  width: 100px;
+  /* Flexible */
 }
 table th:nth-child(4), table td:nth-child(4) {
-  width: 180px;
+  width: 100px;
 }
 table th:nth-child(5), table td:nth-child(5) {
   width: 180px;
 }
 table th:nth-child(6), table td:nth-child(6) {
+  width: 180px;
+}
+table th:nth-child(7), table td:nth-child(7) {
   width: 96px;
 }
 
@@ -343,7 +348,7 @@ table th:nth-child(6), table td:nth-child(6) {
   transform: translateY(20px);
   transition: opacity 0.2s, transform 0.2s;
   min-width: 200px;
-  pointer-events: none;
+  pointer-events: auto; /* Let action buttons receive click events */
 }
 
 .toast.show {
@@ -368,4 +373,69 @@ table th:nth-child(6), table td:nth-child(6) {
   border-right-color: #1a3a1a;
   color: #aaffaa;
 }
+
+/* Toolbar and Reordering styles */
+.table-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  color: #aaa;
+}
+
+.sort-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-container select {
+  background: #222;
+  color: #fff;
+  border: 2px solid #555;
+  padding: 4px 8px;
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+  cursor: pointer;
+}
+
+.sort-container select:focus {
+  border-color: #aaa;
+}
+
+.grab-handle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 4px);
+  gap: 3px;
+  cursor: grab;
+  user-select: none;
+  padding: 8px 6px;
+  vertical-align: middle;
+}
+
+.grab-handle span {
+  width: 4px;
+  height: 4px;
+  background-color: #555;
+  border-radius: 50%;
+  transition: background-color 0.2s;
+}
+
+.grab-handle:hover span {
+  background-color: #aaa;
+}
+
+.grab-handle:active {
+  cursor: grabbing;
+}
+
+tr.dragging {
+  opacity: 0.3;
+  background: #222 !important;
+  border: 2px dashed #555;
+}
+
 

@@ -3,6 +3,7 @@ const app = document.getElementById('app')
 const msg = {
   addFailed: 'Failed to add target: server unreachable.',
   deleteFailed: 'Failed to delete target: server unreachable.',
+  saveFailed: 'Failed to save target: server unreachable or invalid value.',
   serverDown: 'Failed to connect to server. Is it running?',
   loginFailed: 'Wrong password.'
 }
@@ -18,6 +19,8 @@ let sleepTimer = null
 let maintainerSleep = 10
 let pendingAdd = null
 let isDirty = false
+let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
+let isDragging = false
 
 function formatShort(n) {
   if (n === null || n === undefined || n === '') return ''
@@ -60,7 +63,7 @@ function iconHtml(x, y) {
   return `<span class="gtnh-icon" style="${iconStyle(x, y)}"></span>`
 }
 
-function showToast(message, type = 'success') {
+function showToast(message, type = 'success', action = null) {
   let container = document.getElementById('toast-container')
   if (!container) {
     container = document.createElement('div')
@@ -70,13 +73,39 @@ function showToast(message, type = 'success') {
   }
   const toast = document.createElement('div')
   toast.className = `toast toast-${type}`
-  toast.textContent = message
+  
+  const textNode = document.createElement('span')
+  textNode.textContent = message
+  toast.appendChild(textNode)
+
+  if (action && action.text && action.callback) {
+    const btn = document.createElement('button')
+    btn.textContent = action.text
+    btn.style.marginLeft = '8px'
+    btn.style.background = 'none'
+    btn.style.border = 'none'
+    btn.style.color = type === 'error' ? '#ffaaaa' : '#55ff55'
+    btn.style.textDecoration = 'underline'
+    btn.style.cursor = 'pointer'
+    btn.style.fontWeight = 'bold'
+    btn.style.padding = '0'
+    btn.onclick = (e) => {
+      e.stopPropagation()
+      action.callback()
+      toast.classList.remove('show')
+      setTimeout(() => toast.remove(), 200)
+    }
+    toast.appendChild(btn)
+  }
+
   container.appendChild(toast)
   setTimeout(() => toast.classList.add('show'), 10)
   setTimeout(() => {
-    toast.classList.remove('show')
-    setTimeout(() => toast.remove(), 200)
-  }, 3000)
+    if (toast.parentNode) {
+      toast.classList.remove('show')
+      setTimeout(() => toast.remove(), 200)
+    }
+  }, 5000)
 }
 
 async function fetchNetworks() {
@@ -275,7 +304,7 @@ function connectWs() {
     if (msg.type === 'stock') {
       Object.assign(stock, msg.stock)
       if (msg.status) itemStatus = msg.status
-      updateStockCells()
+      if (!isDragging) updateStockCells()
       if (isDirty) {
         isDirty = false
         showToast('Synced to OC!', 'success')
@@ -284,7 +313,7 @@ function connectWs() {
     if (msg.type === 'targets') {
       targets = msg.targets
       Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
-      render()
+      if (!isDragging) render()
     }
   }
 
@@ -323,6 +352,20 @@ function render() {
         <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
       </div>
       <div id="network-bar"></div>
+      <div class="table-toolbar">
+        <div class="targets-count"><span id="active-count">0</span> / <span id="total-count">0</span> items active</div>
+        <div class="sort-container">
+          <label for="sort-select">Sort by:</label>
+          <select id="sort-select">
+            <option value="default">Default</option>
+            <option value="az">Alphabetical A-Z</option>
+            <option value="za">Alphabetical Z-A</option>
+            <option value="threshold-lh">Threshold (Low to High)</option>
+            <option value="threshold-hl">Threshold (High to Low)</option>
+            <option value="custom">Custom (Drag & Drop)</option>
+          </select>
+        </div>
+      </div>
       <div id="table-container"></div>
     </div>
   `
@@ -339,6 +382,14 @@ function render() {
       })
       maintainerSleep = val
     }, 2000)
+  })
+
+  const sortSelect = document.getElementById('sort-select')
+  sortSelect.value = currentSort
+  sortSelect.addEventListener('change', (e) => {
+    currentSort = e.target.value
+    localStorage.setItem('maintainer_sort_mode', currentSort)
+    renderTable()
   })
 
   renderNetworkBar()
@@ -376,10 +427,53 @@ function rowStatusClass(label, target) {
   return ''
 }
 
+function getSortedTargets() {
+  const list = [...targets]
+  if (currentSort === 'az') {
+    list.sort((a, b) => a.label.localeCompare(b.label))
+  } else if (currentSort === 'za') {
+    list.sort((a, b) => b.label.localeCompare(a.label))
+  } else if (currentSort === 'threshold-lh') {
+    list.sort((a, b) => {
+      const ta = a.threshold === null ? Infinity : a.threshold
+      const tb = b.threshold === null ? Infinity : b.threshold
+      return ta - tb
+    })
+  } else if (currentSort === 'threshold-hl') {
+    list.sort((a, b) => {
+      const ta = a.threshold === null ? Infinity : a.threshold
+      const tb = b.threshold === null ? Infinity : b.threshold
+      return tb - ta
+    })
+  } else if (currentSort === 'custom') {
+    const savedOrder = JSON.parse(localStorage.getItem(`maintainer_custom_order_${networkId}`) || '[]')
+    if (savedOrder.length > 0) {
+      const activeLabels = new Set(targets.map(t => t.label))
+      const cleanedOrder = savedOrder.filter(label => activeLabels.has(label))
+      const orderMap = new Map(cleanedOrder.map((label, idx) => [label, idx]))
+      list.sort((a, b) => {
+        const idxA = orderMap.has(a.label) ? orderMap.get(a.label) : Infinity
+        const idxB = orderMap.has(b.label) ? orderMap.get(b.label) : Infinity
+        return idxA - idxB
+      })
+    }
+  }
+  return list
+}
+
 function renderTable() {
   const container = document.getElementById('table-container')
 
-  const rows = targets.map(t => {
+  // Update active/total count toolbar
+  const activeCount = targets.filter(t => t.enabled !== 0).length
+  const totalCount = targets.length
+  const activeEl = document.getElementById('active-count')
+  const totalEl = document.getElementById('total-count')
+  if (activeEl) activeEl.textContent = activeCount
+  if (totalEl) totalEl.textContent = totalCount
+
+  const sortedTargets = getSortedTargets()
+  const rows = sortedTargets.map(t => {
     const count = stock[t.label]
     const stockDisplay = count === undefined ? '...' : formatCount(count)
     const stockTitle = count === undefined ? 'Loading...' : String(count)
@@ -390,6 +484,13 @@ function renderTable() {
 
     return `
       <tr data-row="${t.label}" class="${rowStatusClass(t.label, t)}" ${opacity}>
+        <td>
+          <div class="grab-handle">
+            <span></span><span></span>
+            <span></span><span></span>
+            <span></span><span></span>
+          </div>
+        </td>
         <td>
           <button class="mc-toggle ${enabled ? 'mc-toggle-on' : 'mc-toggle-off'}" data-toggle="${t.label}">
             ${enabled ? 'Enabled' : 'Disabled'}
@@ -427,6 +528,7 @@ function renderTable() {
   const addEnabled = pendingAdd ? (pendingAdd.enabled !== false) : true
   const addRow = `
     <tr>
+      <td></td>
       <td>
         <button id="add-toggle" class="mc-toggle ${addEnabled ? 'mc-toggle-on' : 'mc-toggle-off'}" ${pendingAdd ? '' : 'disabled'}>
           ${addEnabled ? 'Enabled' : 'Disabled'}
@@ -444,6 +546,7 @@ function renderTable() {
     <table>
       <thead>
         <tr>
+          <th></th>
           <th></th>
           <th>Item</th>
           <th>Stock</th>
@@ -470,7 +573,17 @@ function renderTable() {
     })
     input.addEventListener('blur', () => {
       if (input.value === '') {
-        if (savedValue !== '') saveTarget(input.dataset.label, getRowData(input.dataset.label))
+        const field = input.dataset.field
+        if (field === 'batch_size') {
+          input.value = savedValue
+          return
+        }
+        if (savedValue !== '') {
+          saveTarget(input.dataset.label, getRowData(input.dataset.label))
+            .catch(() => {
+              input.value = savedValue
+            })
+        }
         return
       }
       let parsed = parseAmount(input.value)
@@ -481,7 +594,12 @@ function renderTable() {
       }
       if (parsed > 9000000000000000) parsed = 9000000000000000
       input.value = formatShort(parsed)
-      if (input.value !== savedValue) saveTarget(input.dataset.label, getRowData(input.dataset.label))
+      if (input.value !== savedValue) {
+        saveTarget(input.dataset.label, getRowData(input.dataset.label))
+          .catch(() => {
+            input.value = savedValue
+          })
+      }
     })
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') input.blur()
@@ -508,6 +626,10 @@ function renderTable() {
       if (input.value === '') {
         if (pendingAdd) {
           const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
+          if (field === 'batch_size') {
+            input.value = savedValue
+            return
+          }
           pendingAdd[field] = null
         }
         return
@@ -574,6 +696,78 @@ function renderTable() {
       renderTable()
     }
   }
+
+  let draggedRow = null
+
+  container.querySelectorAll('tr[data-row]').forEach(row => {
+    let dragAllowed = false
+    row.addEventListener('mousedown', (e) => {
+      dragAllowed = !!e.target.closest('.grab-handle')
+    })
+
+    row.setAttribute('draggable', 'true')
+
+    row.addEventListener('dragstart', (e) => {
+      if (!dragAllowed) {
+        e.preventDefault()
+        return
+      }
+      draggedRow = row
+      isDragging = true
+      row.classList.add('dragging')
+      e.dataTransfer.effectAllowed = 'move'
+    })
+
+    row.addEventListener('dragend', () => {
+      if (draggedRow) {
+        draggedRow.classList.remove('dragging')
+        draggedRow = null
+      }
+      isDragging = false
+      saveCustomOrder()
+    })
+
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const targetRow = e.target.closest('tr[data-row]')
+      if (targetRow && targetRow !== draggedRow && targetRow.parentNode === draggedRow.parentNode) {
+        const rect = targetRow.getBoundingClientRect()
+        const next = (e.clientY - rect.top) / (rect.bottom - rect.top) > 0.5
+        targetRow.parentNode.insertBefore(draggedRow, next ? targetRow.nextSibling : targetRow)
+      }
+    })
+  })
+}
+
+function saveCustomOrder() {
+  const rowLabels = Array.from(document.querySelectorAll('tr[data-row]')).map(row => row.dataset.row)
+  if (currentSort !== 'custom') {
+    const oldCustomOrder = localStorage.getItem(`maintainer_custom_order_${networkId}`)
+    const oldSortMode = currentSort
+    currentSort = 'custom'
+    localStorage.setItem('maintainer_sort_mode', 'custom')
+    const select = document.getElementById('sort-select')
+    if (select) select.value = 'custom'
+    
+    showToast('Switched to Custom sorting.', 'success', {
+      text: 'Undo',
+      callback: () => {
+        currentSort = oldSortMode
+        localStorage.setItem('maintainer_sort_mode', oldSortMode)
+        if (oldCustomOrder) {
+          localStorage.setItem(`maintainer_custom_order_${networkId}`, oldCustomOrder)
+        } else {
+          localStorage.removeItem(`maintainer_custom_order_${networkId}`)
+        }
+        const select2 = document.getElementById('sort-select')
+        if (select2) select2.value = oldSortMode
+        renderTable()
+        showToast('Reverted sort changes.', 'success')
+      }
+    })
+  }
+  localStorage.setItem(`maintainer_custom_order_${networkId}`, JSON.stringify(rowLabels))
 }
 
 function getRowData(label) {
