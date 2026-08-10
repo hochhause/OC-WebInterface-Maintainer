@@ -90,7 +90,16 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
     }
   }
   const settings = getSettings(network_id)
-  res.json({ targets: withIcons(getTargets(network_id)).filter(t => t.enabled !== 0), maintainer_sleep: settings.maintainer_sleep })
+  const ocTargets = getTargets(network_id)
+    .filter(t => t.enabled !== 0)
+    .map(t => ({
+      label: t.label,
+      threshold: t.threshold,
+      batch_size: t.batch_size,
+      fluid_tag: t.fluid_tag,
+      is_fluid: t.is_fluid
+    }))
+  res.json({ targets: ocTargets, maintainer_sleep: settings.maintainer_sleep })
 })
 
 

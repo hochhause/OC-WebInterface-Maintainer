@@ -14,23 +14,31 @@ let networks = []
 let registry = []
 let itemStatus = {}
 const timers = {}
-let statusMsg = ''
-let statusTimer = null
 let sleepTimer = null
 let maintainerSleep = 10
 let pendingAdd = null
+let isDirty = false
+
+function formatShort(n) {
+  if (n === null || n === undefined || n === '') return ''
+  const num = Number(n)
+  if (!Number.isFinite(num)) return ''
+  if (num >= 1e15) return (num / 1e15).toFixed(1).replace(/\.0$/, '') + 'q'
+  if (num >= 1e12) return (num / 1e12).toFixed(1).replace(/\.0$/, '') + 't'
+  if (num >= 1e9) return (num / 1e9).toFixed(1).replace(/\.0$/, '') + 'b'
+  if (num >= 1e6) return (num / 1e6).toFixed(1).replace(/\.0$/, '') + 'm'
+  if (num >= 1e3) return (num / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(num)
+}
 
 function formatCount(n) {
-  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'b'
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'm'
-  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
-  return String(n)
+  return formatShort(n)
 }
 
 function parseAmount(str) {
   if (!str || str.trim() === '') return null
-  const multipliers = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }
-  const s = str.toLowerCase().trim().replace(/,/g, '').replace(/(\d+\.?\d*)([kmbt]+)/g, (_, num, suf) => {
+  const multipliers = { k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15 }
+  const s = str.toLowerCase().trim().replace(/,/g, '').replace(/(\d+\.?\d*)([kmbtq]+)/g, (_, num, suf) => {
     let val = parseFloat(num)
     for (const c of suf) val *= multipliers[c] || 1
     return String(val)
@@ -52,12 +60,23 @@ function iconHtml(x, y) {
   return `<span class="gtnh-icon" style="${iconStyle(x, y)}"></span>`
 }
 
-function setStatus(text) {
-  clearTimeout(statusTimer)
-  statusMsg = text
-  const el = document.getElementById('status')
-  if (el) el.textContent = text
-  if (text) statusTimer = setTimeout(() => setStatus(''), 3000)
+function showToast(message, type = 'success') {
+  let container = document.getElementById('toast-container')
+  if (!container) {
+    container = document.createElement('div')
+    container.id = 'toast-container'
+    container.className = 'toast-container'
+    document.body.appendChild(container)
+  }
+  const toast = document.createElement('div')
+  toast.className = `toast toast-${type}`
+  toast.textContent = message
+  container.appendChild(toast)
+  setTimeout(() => toast.classList.add('show'), 10)
+  setTimeout(() => {
+    toast.classList.remove('show')
+    setTimeout(() => toast.remove(), 200)
+  }, 3000)
 }
 
 async function fetchNetworks() {
@@ -114,31 +133,44 @@ function showLogin() {
 
 async function saveTarget(label, data) {
   try {
-    await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
+    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     })
-  } catch {}
+    if (!res.ok) throw new Error()
+    isDirty = true
+  } catch {
+    showToast(msg.saveFailed, 'error')
+    throw new Error(msg.saveFailed)
+  }
 }
 
-async function addTarget(label, threshold, batchSize, isFluid) {
+async function addTarget(label, threshold, batchSize, isFluid, enabled) {
+  let parsedThreshold = threshold === '' ? null : (parseAmount(threshold) ?? Number(threshold))
+  if (parsedThreshold !== null && parsedThreshold > 9000000000000000) parsedThreshold = 9000000000000000
+  let parsedBatch = parseAmount(batchSize) ?? Number(batchSize) ?? 1
+  if (parsedBatch > 9000000000000000) parsedBatch = 9000000000000000
+
   try {
-    await fetch(`/api/targets/${networkId}`, {
+    const res = await fetch(`/api/targets/${networkId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         label,
-        threshold: threshold === '' ? null : (parseAmount(threshold) ?? Number(threshold)),
-        batch_size: parseAmount(batchSize) ?? Number(batchSize) ?? 1,
-        is_fluid: isFluid
+        threshold: parsedThreshold,
+        batch_size: parsedBatch,
+        is_fluid: isFluid,
+        enabled
       })
     })
+    if (!res.ok) throw new Error()
+    isDirty = true
     await fetchTargets()
     pendingAdd = null
     render()
   } catch {
-    setStatus(msg.addFailed)
+    showToast(msg.addFailed, 'error')
   }
 }
 
@@ -146,19 +178,22 @@ async function removeTarget(label) {
   clearTimeout(timers[label])
   delete timers[label]
   try {
-    await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, { method: 'DELETE' })
+    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error()
+    isDirty = true
     await fetchTargets()
     render()
   } catch {
-    setStatus(msg.deleteFailed)
+    showToast(msg.deleteFailed, 'error')
   }
 }
 
 async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
   const old = targets.find(t => t.label === oldLabel)
   try {
-    await fetch(`/api/targets/${networkId}/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
-    await fetch(`/api/targets/${networkId}`, {
+    const res1 = await fetch(`/api/targets/${networkId}/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
+    if (!res1.ok) throw new Error()
+    const res2 = await fetch(`/api/targets/${networkId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -169,10 +204,12 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
         enabled: old?.enabled !== 0
       })
     })
+    if (!res2.ok) throw new Error()
+    isDirty = true
     await fetchTargets()
     render()
   } catch {
-    setStatus(msg.saveFailed)
+    showToast(msg.saveFailed, 'error')
   }
 }
 
@@ -239,8 +276,12 @@ function connectWs() {
       Object.assign(stock, msg.stock)
       if (msg.status) itemStatus = msg.status
       updateStockCells()
+      if (isDirty) {
+        isDirty = false
+        showToast('Synced to OC!', 'success')
+      }
     }
-if (msg.type === 'targets') {
+    if (msg.type === 'targets') {
       targets = msg.targets
       Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
       render()
@@ -267,10 +308,20 @@ function render() {
   app.innerHTML = `
     <div>
       <div class="page-header">
-        <h1>OC Level Maintainer</h1>
+        <div class="title-container">
+          <h1>OC Level Maintainer</h1>
+          <span class="author-credits">
+            by Soycake
+            <a href="https://github.com/Soycakes/OC-WebInterface-Maintainer" target="_blank" rel="noopener noreferrer">
+              <img src="/githubLogo.png" alt="GitHub" class="credit-logo gh-logo" />
+            </a>
+            <a href="https://www.youtube.com/@soycake" target="_blank" rel="noopener noreferrer">
+              <img src="/youtubeLogo.png" alt="YouTube" class="credit-logo" />
+            </a>
+          </span>
+        </div>
         <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
       </div>
-      <p id="status">${statusMsg}</p>
       <div id="network-bar"></div>
       <div id="table-container"></div>
     </div>
@@ -332,8 +383,8 @@ function renderTable() {
     const count = stock[t.label]
     const stockDisplay = count === undefined ? '...' : formatCount(count)
     const stockTitle = count === undefined ? 'Loading...' : String(count)
-    const thresholdVal = t.threshold === null ? '' : t.threshold.toLocaleString()
-    const batchVal = (t.batch_size ?? 1).toLocaleString()
+    const thresholdVal = formatShort(t.threshold)
+    const batchVal = formatShort(t.batch_size ?? 1)
     const enabled = t.enabled !== 0
     const opacity = enabled ? '' : 'style="opacity:0.35"'
 
@@ -370,13 +421,21 @@ function renderTable() {
     ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${pendingAdd.label}</span></div>`
     : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
 
+  const addThresholdVal = pendingAdd && pendingAdd.threshold !== undefined && pendingAdd.threshold !== null ? formatShort(pendingAdd.threshold) : ''
+  const addBatchVal = pendingAdd && pendingAdd.batch_size !== undefined && pendingAdd.batch_size !== null ? formatShort(pendingAdd.batch_size) : '1'
+
+  const addEnabled = pendingAdd ? (pendingAdd.enabled !== false) : true
   const addRow = `
     <tr>
-      <td></td>
+      <td>
+        <button id="add-toggle" class="mc-toggle ${addEnabled ? 'mc-toggle-on' : 'mc-toggle-off'}" ${pendingAdd ? '' : 'disabled'}>
+          ${addEnabled ? 'Enabled' : 'Disabled'}
+        </button>
+      </td>
       <td>${slotHtml}</td>
       <td></td>
-      <td><input id="add-threshold" type="text" placeholder="infinite" ${pendingAdd ? '' : 'disabled'}></td>
-      <td><input id="add-batch" type="text" placeholder="1" value="1" ${pendingAdd ? '' : 'disabled'}></td>
+      <td><input id="add-threshold" type="text" placeholder="infinite" value="${addThresholdVal}" ${pendingAdd ? '' : 'disabled'}></td>
+      <td><input id="add-batch" type="text" placeholder="1" value="${addBatchVal}" ${pendingAdd ? '' : 'disabled'}></td>
       <td><button id="add-btn" ${pendingAdd ? '' : 'disabled'}>Add</button></td>
     </tr>
   `
@@ -399,14 +458,29 @@ function renderTable() {
 
   container.querySelectorAll('input[data-field]').forEach(input => {
     let savedValue = input.value
-    input.addEventListener('focus', () => { savedValue = input.value })
+    input.addEventListener('focus', () => {
+      const label = input.dataset.label
+      const field = input.dataset.field
+      const t = targets.find(x => x.label === label)
+      if (t) {
+        const rawVal = t[field]
+        input.value = rawVal === null || rawVal === undefined ? '' : rawVal.toLocaleString()
+      }
+      savedValue = input.value
+    })
     input.addEventListener('blur', () => {
       if (input.value === '') {
         if (savedValue !== '') saveTarget(input.dataset.label, getRowData(input.dataset.label))
         return
       }
-      const parsed = parseAmount(input.value)
-      if (parsed !== null) input.value = parsed.toLocaleString()
+      let parsed = parseAmount(input.value)
+      if (parsed === null) {
+        showToast('Invalid format', 'error')
+        input.value = savedValue
+        return
+      }
+      if (parsed > 9000000000000000) parsed = 9000000000000000
+      input.value = formatShort(parsed)
       if (input.value !== savedValue) saveTarget(input.dataset.label, getRowData(input.dataset.label))
     })
     input.addEventListener('keydown', e => {
@@ -422,11 +496,34 @@ function renderTable() {
     const input = document.getElementById(id)
     if (!input || input.disabled) return
     let savedValue = input.value
-    input.addEventListener('focus', () => { savedValue = input.value })
+    input.addEventListener('focus', () => {
+      if (pendingAdd) {
+        const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
+        const rawVal = pendingAdd[field]
+        input.value = rawVal === null || rawVal === undefined ? '' : rawVal.toLocaleString()
+      }
+      savedValue = input.value
+    })
     input.addEventListener('blur', () => {
-      if (input.value === '') return
-      const parsed = parseAmount(input.value)
-      if (parsed !== null) input.value = parsed.toLocaleString()
+      if (input.value === '') {
+        if (pendingAdd) {
+          const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
+          pendingAdd[field] = null
+        }
+        return
+      }
+      let parsed = parseAmount(input.value)
+      if (parsed === null) {
+        showToast('Invalid format', 'error')
+        input.value = savedValue
+        return
+      }
+      if (parsed > 9000000000000000) parsed = 9000000000000000
+      if (pendingAdd) {
+        const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
+        pendingAdd[field] = parsed
+      }
+      input.value = formatShort(parsed)
     })
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') input.blur()
@@ -461,7 +558,7 @@ function renderTable() {
   document.getElementById('add-slot').onclick = () => {
     openItemPicker(item => {
       const reg = registry.find(i => i.label === item.label)
-      pendingAdd = { ...item, x: reg?.x, y: reg?.y }
+      pendingAdd = { ...item, x: reg?.x, y: reg?.y, enabled: true, threshold: null, batch_size: 1 }
       renderTable()
     })
   }
@@ -470,7 +567,11 @@ function renderTable() {
     document.getElementById('add-btn').onclick = () => {
       const threshold = document.getElementById('add-threshold').value
       const batch = document.getElementById('add-batch').value || '1'
-      addTarget(pendingAdd.label, threshold, batch, pendingAdd.is_fluid)
+      addTarget(pendingAdd.label, threshold, batch, pendingAdd.is_fluid, pendingAdd.enabled !== false)
+    }
+    document.getElementById('add-toggle').onclick = () => {
+      pendingAdd.enabled = pendingAdd.enabled === false
+      renderTable()
     }
   }
 }
@@ -480,10 +581,16 @@ function getRowData(label) {
   const batchInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="batch_size"]`)
   const target = targets.find(t => t.label === label)
 
+  let threshold = thresholdInput.value === '' ? null : (parseAmount(thresholdInput.value) ?? Number(thresholdInput.value))
+  if (threshold !== null && threshold > 9000000000000000) threshold = 9000000000000000
+  let batch = parseAmount(batchInput.value) ?? Number(batchInput.value) ?? 1
+  if (batch > 9000000000000000) batch = 9000000000000000
+
   return {
-    threshold: thresholdInput.value === '' ? null : (parseAmount(thresholdInput.value) ?? Number(thresholdInput.value)),
-    batch_size: parseAmount(batchInput.value) ?? Number(batchInput.value) ?? 1,
-    is_fluid: target?.is_fluid ?? false
+    threshold,
+    batch_size: batch,
+    is_fluid: target?.is_fluid ?? false,
+    enabled: target ? target.enabled !== 0 : true
   }
 }
 

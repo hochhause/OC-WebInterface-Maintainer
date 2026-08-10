@@ -100,7 +100,7 @@ button:disabled {
   border-right: 2px solid #222;
   color: #e0e0e0;
   padding: 4px 10px;
-  min-width: 80px;
+  width: 90px;
   cursor: pointer;
   font-family: inherit;
   font-size: inherit;
@@ -159,6 +159,35 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.5rem;
+}
+
+.title-container {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.author-credits {
+  font-size: 1.05rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.credit-logo {
+  width: 22px;
+  height: 22px;
+  display: inline-block;
+  vertical-align: middle;
+  transition: opacity 0.2s;
+}
+
+.credit-logo:hover {
+  opacity: 0.8;
+}
+
+.gh-logo {
+  filter: brightness(0) invert(1);
 }
 
 .sleep-setting {
@@ -260,4 +289,83 @@ th, td {
   text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid #333;
+  vertical-align: middle;
 }
+
+table input[type="text"] {
+  width: 100%;
+}
+
+/* Stable column widths to prevent layout shifts */
+table th:nth-child(1), table td:nth-child(1) {
+  width: 110px;
+}
+table th:nth-child(2), table td:nth-child(2) {
+  /* Flexible */
+}
+table th:nth-child(3), table td:nth-child(3) {
+  width: 100px;
+}
+table th:nth-child(4), table td:nth-child(4) {
+  width: 180px;
+}
+table th:nth-child(5), table td:nth-child(5) {
+  width: 180px;
+}
+table th:nth-child(6), table td:nth-child(6) {
+  width: 96px;
+}
+
+/* Toast Notification System */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+}
+
+.toast {
+  background: #2a2a2a;
+  border-top: 2px solid #5a5a5a;
+  border-left: 2px solid #5a5a5a;
+  border-bottom: 2px solid #111;
+  border-right: 2px solid #111;
+  color: #e0e0e0;
+  padding: 10px 16px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  text-shadow: 1px 1px 0 #000;
+  box-shadow: 2px 2px 0 #000;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.2s, transform 0.2s;
+  min-width: 200px;
+  pointer-events: none;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-error {
+  background: #6a3a3a;
+  border-top-color: #bf6a6a;
+  border-left-color: #bf6a6a;
+  border-bottom-color: #3a1a1a;
+  border-right-color: #3a1a1a;
+  color: #ffaaaa;
+}
+
+.toast-success {
+  background: #3a6a3a;
+  border-top-color: #6abf6a;
+  border-left-color: #6abf6a;
+  border-bottom-color: #1a3a1a;
+  border-right-color: #1a3a1a;
+  color: #aaffaa;
+}
+
