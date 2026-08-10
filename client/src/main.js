@@ -18,6 +18,7 @@ const timers = {}
 let sleepTimer = null
 let maintainerSleep = 10
 let pendingAdd = null
+let addDefaults = { threshold: null, batch_size: 1, enabled: true }
 let isDirty = false
 let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
 let isDragging = false
@@ -335,39 +336,40 @@ function updateStockCells() {
 
 function render() {
   app.innerHTML = `
-    <div>
-      <div class="page-header">
-        <div class="title-container">
-          <h1>OC Level Maintainer</h1>
-          <span class="author-credits">
-            by Soycake
-            <a href="https://github.com/Soycakes/OC-WebInterface-Maintainer" target="_blank" rel="noopener noreferrer">
-              <img src="/githubLogo.png" alt="GitHub" class="credit-logo gh-logo" />
-            </a>
-            <a href="https://www.youtube.com/@soycake" target="_blank" rel="noopener noreferrer">
-              <img src="/youtubeLogo.png" alt="YouTube" class="credit-logo" />
-            </a>
-          </span>
-        </div>
-        <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
+    <div class="page-header">
+      <div class="title-container">
+        <h1>OC Level Maintainer</h1>
+        <span class="author-credits">
+          by Soycake
+          <a href="https://github.com/Soycakes/OC-WebInterface-Maintainer" target="_blank" rel="noopener noreferrer">
+            <img src="/githubLogo.png" alt="GitHub" class="credit-logo gh-logo" />
+          </a>
+          <a href="https://www.youtube.com/@soycake" target="_blank" rel="noopener noreferrer">
+            <img src="/youtubeLogo.png" alt="YouTube" class="credit-logo" />
+          </a>
+        </span>
       </div>
-      <div id="network-bar"></div>
-      <div class="table-toolbar">
-        <div class="targets-count"><span id="active-count">0</span> / <span id="total-count">0</span> items active</div>
-        <div class="sort-container">
-          <label for="sort-select">Sort by:</label>
-          <select id="sort-select">
-            <option value="default">Default</option>
-            <option value="az">Alphabetical A-Z</option>
-            <option value="za">Alphabetical Z-A</option>
-            <option value="threshold-lh">Threshold (Low to High)</option>
-            <option value="threshold-hl">Threshold (High to Low)</option>
-            <option value="custom">Custom (Drag & Drop)</option>
-          </select>
-        </div>
+      <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
+    </div>
+    <div id="network-bar"></div>
+    <div class="table-toolbar">
+      <div class="targets-count"><span id="active-count">0</span> / <span id="total-count">0</span> items active</div>
+      <div class="sort-container">
+        <label for="sort-select">Sort by:</label>
+        <select id="sort-select">
+          <option value="default">Default</option>
+          <option value="az">Alphabetical A-Z</option>
+          <option value="za">Alphabetical Z-A</option>
+          <option value="threshold-lh">Threshold (Low to High)</option>
+          <option value="threshold-hl">Threshold (High to Low)</option>
+          <option value="custom">Custom (Drag & Drop)</option>
+        </select>
       </div>
+    </div>
+    <div id="main-content">
       <div id="table-container"></div>
     </div>
+    <div id="add-container" class="mc-inventory-panel"></div>
   `
 
   document.getElementById('sleep-input').addEventListener('input', (e) => {
@@ -521,30 +523,6 @@ function renderTable() {
     `
   }).join('')
 
-  const slotHtml = pendingAdd
-    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${pendingAdd.label}</span></div>`
-    : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
-
-  const addThresholdVal = pendingAdd && pendingAdd.threshold !== undefined && pendingAdd.threshold !== null ? formatShort(pendingAdd.threshold) : ''
-  const addBatchVal = pendingAdd && pendingAdd.batch_size !== undefined && pendingAdd.batch_size !== null ? formatShort(pendingAdd.batch_size) : '1'
-
-  const addEnabled = pendingAdd ? (pendingAdd.enabled !== false) : true
-  const addRow = `
-    <tr>
-      <td></td>
-      <td>
-        <button id="add-toggle" class="mc-toggle ${addEnabled ? 'mc-toggle-on' : 'mc-toggle-off'}" ${pendingAdd ? '' : 'disabled'}>
-          ${addEnabled ? 'Enabled' : 'Disabled'}
-        </button>
-      </td>
-      <td>${slotHtml}</td>
-      <td></td>
-      <td><input id="add-threshold" type="text" placeholder="infinite" value="${addThresholdVal}" ${pendingAdd ? '' : 'disabled'}></td>
-      <td><input id="add-batch" type="text" placeholder="1" value="${addBatchVal}" ${pendingAdd ? '' : 'disabled'}></td>
-      <td><button id="add-btn" ${pendingAdd ? '' : 'disabled'}>Add</button></td>
-    </tr>
-  `
-
   container.innerHTML = `
     <table>
       <thead>
@@ -558,7 +536,7 @@ function renderTable() {
           <th></th>
         </tr>
       </thead>
-      <tbody>${rows}${addRow}</tbody>
+      <tbody>${rows}</tbody>
     </table>
   `
 
@@ -613,49 +591,6 @@ function renderTable() {
     })
   })
 
-  ;['add-threshold', 'add-batch'].forEach(id => {
-    const input = document.getElementById(id)
-    if (!input || input.disabled) return
-    let savedValue = input.value
-    input.addEventListener('focus', () => {
-      if (pendingAdd) {
-        const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
-        const rawVal = pendingAdd[field]
-        input.value = rawVal === null || rawVal === undefined ? '' : rawVal.toLocaleString()
-      }
-      savedValue = input.value
-    })
-    input.addEventListener('blur', () => {
-      if (input.value === '') {
-        if (pendingAdd) {
-          const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
-          if (field === 'batch_size') {
-            input.value = savedValue
-            return
-          }
-          pendingAdd[field] = null
-        }
-        return
-      }
-      let parsed = parseAmount(input.value)
-      if (parsed === null) {
-        showToast('Invalid format', 'error')
-        input.value = savedValue
-        return
-      }
-      if (parsed > 9000000000000000) parsed = 9000000000000000
-      if (pendingAdd) {
-        const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
-        pendingAdd[field] = parsed
-      }
-      input.value = formatShort(parsed)
-    })
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') input.blur()
-      if (e.key === 'Escape') { input.value = savedValue; input.blur() }
-    })
-  })
-
   container.querySelectorAll('[data-delete]').forEach(btn => {
     btn.addEventListener('click', () => removeTarget(btn.dataset.delete))
   })
@@ -680,25 +615,7 @@ function renderTable() {
     })
   })
 
-  document.getElementById('add-slot').onclick = () => {
-    openItemPicker(item => {
-      const reg = registry.find(i => i.label === item.label)
-      pendingAdd = { ...item, x: reg?.x, y: reg?.y, enabled: true, threshold: null, batch_size: 1 }
-      renderTable()
-    })
-  }
-
-  if (pendingAdd) {
-    document.getElementById('add-btn').onclick = () => {
-      const threshold = document.getElementById('add-threshold').value
-      const batch = document.getElementById('add-batch').value || '1'
-      addTarget(pendingAdd.label, threshold, batch, pendingAdd.is_fluid, pendingAdd.enabled !== false)
-    }
-    document.getElementById('add-toggle').onclick = () => {
-      pendingAdd.enabled = pendingAdd.enabled === false
-      renderTable()
-    }
-  }
+  renderAddPanel()
 
   let draggedRow = null
 
@@ -757,6 +674,102 @@ function renderTable() {
       }
     })
   })
+}
+
+function renderAddPanel() {
+  const container = document.getElementById('add-container')
+  if (!container) return
+
+  const slotHtml = pendingAdd
+    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${pendingAdd.label}</span></div>`
+    : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
+
+  const threshVal = addDefaults.threshold != null ? formatShort(addDefaults.threshold) : ''
+  const batchVal = addDefaults.batch_size != null ? formatShort(addDefaults.batch_size) : '1'
+  const addEnabled = addDefaults.enabled
+
+  container.innerHTML = `
+    <div class="inventory-title">Add new item</div>
+    <div class="add-fields">
+      <div class="add-field-cell">
+        <button id="add-toggle" class="mc-toggle ${addEnabled ? 'mc-toggle-on' : 'mc-toggle-off'}">
+          ${addEnabled ? 'Enabled' : 'Disabled'}
+        </button>
+      </div>
+      <div class="add-field-cell add-field-item">
+        ${slotHtml}
+      </div>
+      <div class="add-field-cell">
+        <input id="add-threshold" type="text" placeholder="infinite" value="${threshVal}">
+      </div>
+      <div class="add-field-cell">
+        <input id="add-batch" type="text" placeholder="1" value="${batchVal}">
+      </div>
+      <div class="add-field-cell">
+        <button id="add-btn" ${pendingAdd ? '' : 'disabled'}>Add</button>
+      </div>
+    </div>
+  `
+
+  ;['add-threshold', 'add-batch'].forEach(id => {
+    const input = document.getElementById(id)
+    if (!input) return
+    const field = id === 'add-threshold' ? 'threshold' : 'batch_size'
+    let savedValue = input.value
+    input.addEventListener('focus', () => {
+      const raw = addDefaults[field]
+      input.value = raw === null || raw === undefined ? '' : raw.toLocaleString()
+      savedValue = input.value
+    })
+    input.addEventListener('blur', () => {
+      if (input.value === '') {
+        if (field === 'batch_size') { input.value = savedValue; return }
+        addDefaults[field] = null
+        if (pendingAdd) pendingAdd[field] = null
+        return
+      }
+      let parsed = parseAmount(input.value)
+      if (parsed === null) { showToast('Invalid format', 'error'); input.value = savedValue; return }
+      if (parsed > 9000000000000000) parsed = 9000000000000000
+      addDefaults[field] = parsed
+      if (pendingAdd) pendingAdd[field] = parsed
+      input.value = formatShort(parsed)
+    })
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') input.blur()
+      if (e.key === 'Escape') { input.value = savedValue; input.blur() }
+    })
+  })
+
+  document.getElementById('add-slot').onclick = () => {
+    openItemPicker(item => {
+      const reg = registry.find(i => i.label === item.label)
+      pendingAdd = { ...item, x: reg?.x, y: reg?.y, ...addDefaults }
+      renderAddPanel()
+    })
+  }
+
+  document.getElementById('add-toggle').onclick = () => {
+    addDefaults.enabled = !addDefaults.enabled
+    if (pendingAdd) pendingAdd.enabled = addDefaults.enabled
+    renderAddPanel()
+  }
+
+  if (pendingAdd) {
+    document.getElementById('add-btn').onclick = () => {
+      const threshStr = document.getElementById('add-threshold').value
+      const batchStr = document.getElementById('add-batch').value || '1'
+      if (threshStr && parseAmount(threshStr) === null) {
+        showToast('Invalid threshold format', 'error')
+        return
+      }
+      if (parseAmount(batchStr) === null) {
+        showToast('Invalid batch size format', 'error')
+        return
+      }
+      addTarget(pendingAdd.label, threshStr, batchStr, pendingAdd.is_fluid, addDefaults.enabled)
+    }
+  }
 }
 
 function saveCustomOrder() {
