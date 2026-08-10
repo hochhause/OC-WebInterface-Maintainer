@@ -9,6 +9,10 @@ local fluidNameCache = {}
 local cacheTime = 0
 local CACHE_TTL = 600
 
+local craftingCache = nil
+local craftingCacheTime = 0
+local CRAFTING_CACHE_TTL = 30
+
 local function getCraftable(name)
   local now = computer.uptime()
   if now - cacheTime >= CACHE_TTL then
@@ -140,14 +144,26 @@ function ae2.getFluidCount(name, fluidName)
   return fluid and (fluid.size or fluid.amount) or 0
 end
 
-function ae2.crafting()
-  local cpus = ME.getCpus()
-  local active = {}
-  for _, v in pairs(cpus) do
-    local output = v.cpu.finalOutput()
-    if output then active[output.label] = output.size or 1 end
+function ae2.crafting(force)
+  local now = computer.uptime()
+  if force or not craftingCache or now - craftingCacheTime >= CRAFTING_CACHE_TTL then
+    local cpus = ME.getCpus()
+    local active = {}
+    for _, v in pairs(cpus) do
+      local output = v.cpu.finalOutput()
+      if output then active[output.label] = output.size or 1 end
+    end
+    craftingCache = active
+    craftingCacheTime = now
   end
-  return active
+  local copy = {}
+  for k, v in pairs(craftingCache) do copy[k] = v end
+  return copy
+end
+
+function ae2.clearCraftingCache()
+  craftingCache = nil
+  craftingCacheTime = 0
 end
 
 function ae2.hasFluidSupport()
@@ -158,6 +174,7 @@ function ae2.clearCache()
   itemCache = {}
   fluidNameCache = {}
   cacheTime = 0
+  ae2.clearCraftingCache()
 end
 
 return ae2

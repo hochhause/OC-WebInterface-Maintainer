@@ -124,6 +124,7 @@ local function mainLoop()
         local ok, msg = ae2.requestItem(label, config[1], config[2], config[3], cachedStock[label])
         if ok then
           cycleRequested[label] = config[2] or 1
+          ae2.clearCraftingCache()
         elseif msg then
           cycleFailed[label] = msg
           log(msg)
@@ -136,6 +137,7 @@ local function mainLoop()
         local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3], cachedStock[label])
         if ok then
           cycleRequested[label] = config[2] or 1
+          ae2.clearCraftingCache()
         elseif msg then
           cycleFailed[label] = msg
           log(msg)
