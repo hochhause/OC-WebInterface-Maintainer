@@ -35,7 +35,7 @@ end
 
 local function itemCount(craftable)
   local item = getStack(craftable)
-  if not item or not item.name then return 0 end
+  if not item or not item.name then return 0, nil end
   local found
   if item.tag then
     found = ME.getItemInNetwork(item.name, item.damage or 0, item.tag)
@@ -43,7 +43,7 @@ local function itemCount(craftable)
   if not found then
     found = ME.getItemInNetwork(item.name, item.damage or 0)
   end
-  return found and found.size or 0
+  return found and found.size or 0, item
 end
 
 function ae2.getCount(name, fluidName)
@@ -56,22 +56,27 @@ function ae2.getCount(name, fluidName)
   return itemCount(craftable)
 end
 
-function ae2.requestItem(name, threshold, batch, fluidName)
+function ae2.requestItem(name, threshold, batch, fluidName, currentCount)
   local craftable = getCraftable(name)
   if not craftable then
     return false, name .. " is not craftable"
   end
+  local itemStack
   if threshold ~= nil then
     local count
     if fluidName then
       local fluid = ME.getItemInNetwork("ae2fc:fluid_drop", 0, '{Fluid:' .. fluidName .. '}')
       count = fluid and fluid.size or 0
     else
-      count = itemCount(craftable)
+      if currentCount then
+        count = currentCount
+      else
+        count, itemStack = itemCount(craftable)
+      end
     end
     if count >= threshold then return end
   end
-  local item = getStack(craftable)
+  local item = itemStack or getStack(craftable)
   if item.label ~= name then
     return false, name .. " label mismatch"
   end
@@ -83,26 +88,33 @@ function ae2.requestItem(name, threshold, batch, fluidName)
   return true, "requested " .. name .. " x " .. batch
 end
 
-function ae2.requestFluid(name, threshold, batch, fluidName)
+function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
   local craftable = getCraftable(name)
   if not craftable then
     return false, name .. " is not craftable"
   end
   if threshold ~= nil then
-    if not fluidName then
-      local cached = fluidNameCache[name]
-      if cached == nil then
-        local stack = getStack(craftable)
-        cached = (stack and stack.name) or false
-        fluidNameCache[name] = cached
+    local amount
+    if currentCount then
+      amount = currentCount
+    else
+      if not fluidName then
+        local cached = fluidNameCache[name]
+        if cached == nil then
+          local stack = getStack(craftable)
+          cached = (stack and stack.name) or false
+          fluidNameCache[name] = cached
+        end
+        if cached then fluidName = cached end
       end
-      if cached then fluidName = cached end
+      if fluidName then
+        local fluid = ME.getFluidInNetwork(fluidName)
+        amount = fluid and (fluid.size or fluid.amount) or 0
+      else
+        amount = 0
+      end
     end
-    if fluidName then
-      local fluid = ME.getFluidInNetwork(fluidName)
-      local amount = fluid and (fluid.size or fluid.amount) or 0
-      if amount >= threshold then return end
-    end
+    if amount >= threshold then return end
   end
   local craft = craftable.request(batch)
   while craft.isComputing() do os.sleep(1) end

@@ -17,6 +17,7 @@ if fluids and next(fluids) and not ae2.hasFluidSupport() then
 end
 
 local lastCycleStatus = { crafting = {}, requested = {}, failed = {} }
+local cachedStock = {}
 
 local gpu = component.isAvailable("gpu") and component.gpu or nil
 local screenW, screenH = 50, 16
@@ -81,7 +82,7 @@ end
 
 local function handleModem(_, _, _, _, _, msg)
   if msg == "requeststock" then
-    tunnel.send(serialization.serialize({ stock = stock(), status = lastCycleStatus }))
+    tunnel.send(serialization.serialize({ stock = cachedStock, status = lastCycleStatus }))
     return
   end
 if msg:sub(1, 8) == "setsleep" then
@@ -108,17 +109,19 @@ if msg:sub(1, 8) == "setsleep" then
 end
 
 local function mainLoop()
+  cachedStock = stock()
   event.listen("modem_message", handleModem)
   while true do
     os.sleep(currentSleep)
 
+    cachedStock = stock()
     local active = ae2.crafting()
     local cycleRequested = {}
     local cycleFailed = {}
 
     for label, config in pairs(items) do
       if not active[label] then
-        local ok, msg = ae2.requestItem(label, config[1], config[2], config[3])
+        local ok, msg = ae2.requestItem(label, config[1], config[2], config[3], cachedStock[label])
         if ok then
           cycleRequested[label] = config[2] or 1
         elseif msg then
@@ -130,7 +133,7 @@ local function mainLoop()
 
     for label, config in pairs(fluids) do
       if not active[label] then
-        local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3])
+        local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3], cachedStock[label])
         if ok then
           cycleRequested[label] = config[2] or 1
         elseif msg then
