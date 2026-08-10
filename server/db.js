@@ -21,15 +21,9 @@ db.exec(`
     PRIMARY KEY (network_id, label)
   );
 
-  CREATE TABLE IF NOT EXISTS catalog (
-    network_id TEXT NOT NULL,
-    label TEXT NOT NULL,
-    PRIMARY KEY (network_id, label)
-  );
-
   CREATE TABLE IF NOT EXISTS settings (
     network_id TEXT PRIMARY KEY,
-    maintainer_sleep INTEGER NOT NULL DEFAULT 5
+    maintainer_sleep INTEGER NOT NULL DEFAULT 10
   );
 
 `)
@@ -50,13 +44,11 @@ const q = {
   `),
   deleteTarget: db.prepare('DELETE FROM targets WHERE network_id = ? AND label = ?'),
   getStock: db.prepare('SELECT * FROM stock WHERE network_id = ?'),
-  getCatalog: db.prepare('SELECT label FROM catalog WHERE network_id = ?'),
   getNetworks: db.prepare('SELECT DISTINCT network_id FROM stock'),
   upsertStock: db.prepare(`
     INSERT INTO stock (network_id, label, count) VALUES (?, ?, ?)
     ON CONFLICT(network_id, label) DO UPDATE SET count = excluded.count
   `),
-  upsertCatalog: db.prepare('INSERT OR IGNORE INTO catalog (network_id, label) VALUES (?, ?)'),
   getSettings: db.prepare('SELECT maintainer_sleep FROM settings WHERE network_id = ?'),
   setSettings: db.prepare('INSERT INTO settings (network_id, maintainer_sleep) VALUES (?, ?) ON CONFLICT(network_id) DO UPDATE SET maintainer_sleep = excluded.maintainer_sleep')
 }
@@ -85,10 +77,6 @@ export function getStock(networkId) {
   return q.getStock.all(networkId)
 }
 
-export function getCatalog(networkId) {
-  return q.getCatalog.all(networkId).map(r => r.label)
-}
-
 export function getNetworks() {
   return q.getNetworks.all().map(r => r.network_id)
 }
@@ -102,17 +90,10 @@ export function updateStock(networkId, stock) {
 }
 
 export function getSettings(networkId) {
-  return q.getSettings.get(networkId) ?? { maintainer_sleep: 5 }
+  return q.getSettings.get(networkId) ?? { maintainer_sleep: 10 }
 }
 
 export function setSettings(networkId, settings) {
   q.setSettings.run(networkId, settings.maintainer_sleep)
 }
 
-export function updateCatalog(networkId, labels) {
-  db.transaction(() => {
-    for (const label of labels) {
-      q.upsertCatalog.run(networkId, label)
-    }
-  })()
-}

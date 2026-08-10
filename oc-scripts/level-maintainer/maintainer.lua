@@ -84,11 +84,7 @@ local function handleModem(_, _, _, _, _, msg)
     tunnel.send(serialization.serialize({ stock = stock(), status = lastCycleStatus }))
     return
   end
-  if msg == "requestcatalog" then
-    tunnel.send(serialization.serialize({ catalog = {} }))
-    return
-  end
-  if msg:sub(1, 8) == "setsleep" then
+if msg:sub(1, 8) == "setsleep" then
     local n = tonumber(msg:sub(10))
     if n and n >= 1 then
       currentSleep = n

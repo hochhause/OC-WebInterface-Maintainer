@@ -11,14 +11,13 @@ let networkId = null
 let targets = []
 let stock = {}
 let networks = []
-let catalog = []
 let registry = []
 let itemStatus = {}
 const timers = {}
 let statusMsg = ''
 let statusTimer = null
 let sleepTimer = null
-let maintainerSleep = 5
+let maintainerSleep = 10
 let pendingAdd = null
 
 function formatCount(n) {
@@ -78,11 +77,6 @@ async function fetchStock() {
   stock = Object.fromEntries(rows.map(r => [r.label, r.count]))
 }
 
-async function fetchCatalog() {
-  const res = await fetch(`/api/catalog/${networkId}`)
-  catalog = await res.json()
-}
-
 async function fetchRegistry() {
   const res = await fetch('/gtnh_registry.json')
   registry = await res.json()
@@ -91,7 +85,7 @@ async function fetchRegistry() {
 async function fetchSettings() {
   const res = await fetch(`/api/settings/${networkId}`)
   const data = await res.json()
-  maintainerSleep = data.maintainer_sleep ?? 5
+  maintainerSleep = data.maintainer_sleep ?? 10
 }
 
 function showLogin() {
@@ -184,8 +178,6 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
 
 
 function openItemPicker(onSelect) {
-  const catalogSet = new Set(catalog)
-
   const overlay = document.createElement('div')
   overlay.className = 'picker-overlay'
   overlay.innerHTML = `
@@ -219,23 +211,12 @@ function openItemPicker(onSelect) {
   }
 
   function search(q) {
-    if (!q) {
-      const catalogItems = registry.filter(i => catalogSet.has(i.label))
-      renderResults(catalogItems)
-      return
-    }
+    if (!q) { renderResults([]); return }
     const tokens = q.toLowerCase().split(/\s+/).filter(Boolean)
-    const results = registry
-      .filter(i => {
-        const label = i.label.toLowerCase()
-        return tokens.every(t => label.includes(t))
-      })
-      .sort((a, b) => {
-        const ac = catalogSet.has(a.label) ? 0 : 1
-        const bc = catalogSet.has(b.label) ? 0 : 1
-        return ac - bc
-      })
-    renderResults(results)
+    renderResults(registry.filter(i => {
+      const label = i.label.toLowerCase()
+      return tokens.every(t => label.includes(t))
+    }))
   }
 
   search('')
@@ -259,10 +240,7 @@ function connectWs() {
       if (msg.status) itemStatus = msg.status
       updateStockCells()
     }
-    if (msg.type === 'catalog') {
-      catalog = msg.catalog
-    }
-    if (msg.type === 'targets') {
+if (msg.type === 'targets') {
       targets = msg.targets
       Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
       render()
@@ -290,7 +268,7 @@ function render() {
     <div>
       <div class="page-header">
         <h1>OC Level Maintainer</h1>
-        <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="1" value="${maintainerSleep}"> s</label>
+        <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
       </div>
       <p id="status">${statusMsg}</p>
       <div id="network-bar"></div>
@@ -332,7 +310,7 @@ function renderNetworkBar() {
   document.getElementById('network-select').onchange = async (e) => {
     Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
     networkId = e.target.value
-    await Promise.all([fetchTargets(), fetchStock(), fetchCatalog()])
+    await Promise.all([fetchTargets(), fetchStock()])
     render()
   }
 }
@@ -514,7 +492,7 @@ async function init() {
     networks = await fetchNetworks()
     if (networks === null) { showLogin(); return }
     networkId = networks[0] || 'main'
-    await Promise.all([fetchTargets(), fetchStock(), fetchCatalog(), fetchRegistry(), fetchSettings()])
+    await Promise.all([fetchTargets(), fetchStock(), fetchRegistry(), fetchSettings()])
     render()
     connectWs()
   } catch {

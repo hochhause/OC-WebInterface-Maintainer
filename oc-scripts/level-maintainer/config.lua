@@ -1,5 +1,5 @@
 return {
-  sleep = 5,
+  sleep = 10,
 
   items = {
     ["Iron Plate"] = {nil, 16},

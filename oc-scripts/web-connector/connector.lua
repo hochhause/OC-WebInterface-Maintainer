@@ -47,7 +47,6 @@ local function pushTargets(targets)
   tunnel.send(serialization.serialize({ targets = targets }))
 end
 
-local lastCatalogTime = 0
 local lastTargetsStr = nil
 local lastSentSleep = nil
 
@@ -57,25 +56,11 @@ while true do
     log("no response from maintainer")
     os.sleep(cfg.poll_interval)
   else
-    local now = os.time()
-    local catalog = nil
-    if now - lastCatalogTime >= cfg.catalog_interval then
-      local catalogData = ask("requestcatalog")
-      if catalogData then
-        catalog = catalogData.catalog
-        catalogData = nil
-        lastCatalogTime = now
-      end
-    end
-
     local result = post("/api/sync", {
       network_id = cfg.network_id,
       stock = stockData.stock,
       status = stockData.status,
-      catalog = catalog,
-      sleep = cfg.poll_interval,
     })
-    catalog = nil
     stockData = nil
 
     if result and result.targets then

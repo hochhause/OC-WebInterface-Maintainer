@@ -16,8 +16,8 @@ function withIcons(targets) {
 }
 import {
   getTargets, upsertTarget, deleteTarget,
-  getStock, getCatalog, getNetworks,
-  updateStock, updateCatalog,
+  getStock, getNetworks,
+  updateStock,
   getSettings, setSettings
 } from './db.js'
 
@@ -49,6 +49,7 @@ const server = createServer(app)
 const wss = new WebSocketServer({ server })
 
 const lastSync = {}
+const lastStockStr = {}
 
 function rateLimit(req, res, next) {
   const id = req.body?.network_id
@@ -78,11 +79,16 @@ function broadcast(data) {
 }
 
 app.post('/api/sync', auth, rateLimit, (req, res) => {
-  const { network_id, stock, catalog, status } = req.body
+  const { network_id, stock, status } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
-  if (stock) updateStock(network_id, stock)
-  if (Array.isArray(catalog) && catalog.length > 0) { updateCatalog(network_id, catalog); broadcast({ type: 'catalog', network_id, catalog }) }
-  if (stock) broadcast({ type: 'stock', network_id, stock, status })
+  if (stock) {
+    const str = JSON.stringify({ stock, status })
+    if (str !== lastStockStr[network_id]) {
+      lastStockStr[network_id] = str
+      updateStock(network_id, stock)
+      broadcast({ type: 'stock', network_id, stock, status })
+    }
+  }
   const settings = getSettings(network_id)
   res.json({ targets: withIcons(getTargets(network_id)).filter(t => t.enabled !== 0), maintainer_sleep: settings.maintainer_sleep })
 })
@@ -150,17 +156,13 @@ app.get('/api/stock/:networkId', browserAuth, (req, res) => {
   res.json(getStock(req.params.networkId))
 })
 
-app.get('/api/catalog/:networkId', browserAuth, (req, res) => {
-  res.json(getCatalog(req.params.networkId))
-})
-
 app.get('/api/settings/:networkId', browserAuth, (req, res) => {
   res.json(getSettings(req.params.networkId))
 })
 
 app.put('/api/settings/:networkId', browserAuth, (req, res) => {
   const sleep = Number(req.body.maintainer_sleep)
-  if (!Number.isFinite(sleep) || sleep < 1) return res.status(400).json({ error: 'invalid' })
+  if (!Number.isFinite(sleep) || sleep < 5) return res.status(400).json({ error: 'invalid' })
   setSettings(req.params.networkId, { maintainer_sleep: Math.floor(sleep) })
   res.json({ ok: true })
 })

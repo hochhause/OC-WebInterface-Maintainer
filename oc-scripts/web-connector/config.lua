@@ -3,7 +3,6 @@ return {
   api_key = "change-me",
   network_id = "main",
 
-  poll_interval = 5,
+  poll_interval = 10,
   tunnel_timeout = 8,
-  catalog_interval = 60,
 }
