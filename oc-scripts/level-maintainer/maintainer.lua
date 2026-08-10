@@ -41,7 +41,7 @@ local function drawScreen(active, requested, failed, queryTime, qCount)
   if not gpu then return end
   gpu.fill(1, 1, screenW, screenH, " ")
   local row = 1
-  local maxRow = queryTime and (screenH - 1) or screenH
+  local maxRow = screenH - 1
   local function line(text, color)
     if row > maxRow then return end
     gpu.setForeground(color or 0xFFFFFF)
@@ -63,17 +63,19 @@ local function drawScreen(active, requested, failed, queryTime, qCount)
     line("  requested " .. label .. " x " .. batch, 0x55FF55)
   end
   for _, msg in pairs(failed) do
-    line("  " .. msg, 0xFF5555)
+    line("  " .. msg, 0xFF2020)
   end
   for _, entry in ipairs(logBuffer) do
     line(entry, 0x888888)
   end
+  gpu.setForeground(0x777777)
+  local statusLine = os.date("%H:%M:%S")
   if queryTime then
-    gpu.setForeground(0x777777)
     local ticks = math.floor(queryTime / 0.05 + 0.5)
     local countStr = qCount and (" (" .. qCount .. " ME calls)") or ""
-    gpu.set(1, screenH, "Query Time: " .. string.format("%.2fs", queryTime) .. " (" .. ticks .. "t)" .. countStr)
+    statusLine = statusLine .. "  Query: " .. string.format("%.2fs", queryTime) .. " (" .. ticks .. "t)" .. countStr
   end
+  gpu.set(1, screenH, statusLine)
   gpu.setForeground(0xFFFFFF)
 end
 
@@ -139,7 +141,6 @@ local function mainLoop()
           ae2.clearCraftingCache()
         elseif msg then
           cycleFailed[label] = msg
-          log(msg)
         end
       end
     end
@@ -152,7 +153,6 @@ local function mainLoop()
           ae2.clearCraftingCache()
         elseif msg then
           cycleFailed[label] = msg
-          log(msg)
         end
       end
     end

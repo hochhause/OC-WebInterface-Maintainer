@@ -319,6 +319,13 @@ th, td {
   overflow: hidden;
 }
 
+thead th {
+  position: sticky;
+  top: 0;
+  background: #0f0f0f;
+  z-index: 2;
+}
+
 table input[type="text"] {
   width: 100%;
 }
