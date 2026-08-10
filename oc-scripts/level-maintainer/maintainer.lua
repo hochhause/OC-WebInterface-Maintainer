@@ -10,6 +10,7 @@ local tunnel = component.tunnel
 local items = cfg.items or {}
 local fluids = cfg.fluids or {}
 local currentSleep = cfg.sleep or 5
+local debugEnabled = cfg.debug == true
 
 if fluids and next(fluids) and not ae2.hasFluidSupport() then
   print("WARNING: fluids configured but ME interface does not support getFluidInNetwork (needs GTNH 2.9+). Fluids skipped.")
@@ -36,12 +37,13 @@ local function log(msg)
   end
 end
 
-local function drawScreen(active, requested, failed)
+local function drawScreen(active, requested, failed, queryTime, qCount)
   if not gpu then return end
   gpu.fill(1, 1, screenW, screenH, " ")
   local row = 1
+  local maxRow = queryTime and (screenH - 1) or screenH
   local function line(text, color)
-    if row > screenH then return end
+    if row > maxRow then return end
     gpu.setForeground(color or 0xFFFFFF)
     gpu.set(1, row, text)
     row = row + 1
@@ -66,6 +68,12 @@ local function drawScreen(active, requested, failed)
   for _, entry in ipairs(logBuffer) do
     line(entry, 0x888888)
   end
+  if queryTime then
+    gpu.setForeground(0x777777)
+    local ticks = math.floor(queryTime / 0.05 + 0.5)
+    local countStr = qCount and (" (" .. qCount .. " ME calls)") or ""
+    gpu.set(1, screenH, "Query Time: " .. string.format("%.2fs", queryTime) .. " (" .. ticks .. "t)" .. countStr)
+  end
   gpu.setForeground(0xFFFFFF)
 end
 
@@ -73,7 +81,7 @@ end
 local function stock()
   local counts = {}
   for label, config in pairs(items) do
-    counts[label] = ae2.getCount(label, config[3])
+    counts[label] = ae2.getCount(label)
   end
   for label, config in pairs(fluids) do
     counts[label] = ae2.getFluidCount(label, config[3])
@@ -88,7 +96,7 @@ local function handleModem(_, _, _, _, _, msg)
   end
 if msg:sub(1, 8) == "setsleep" then
     local n = tonumber(msg:sub(10))
-    if n and n >= 1 then
+    if n and n >= 5 then
       currentSleep = n
       log("sleep set to " .. n .. "s")
     end
@@ -116,6 +124,8 @@ local function mainLoop()
   while true do
     os.sleep(currentSleep)
 
+    if debugEnabled then ae2.resetQueryCount() end
+    local startTime = debugEnabled and computer.uptime() or nil
     cachedStock = stock()
     local active = ae2.crafting()
     local cycleRequested = {}
@@ -123,7 +133,7 @@ local function mainLoop()
 
     for label, config in pairs(items) do
       if not active[label] then
-        local ok, msg = ae2.requestItem(label, config[1], config[2], config[3], cachedStock[label])
+        local ok, msg = ae2.requestItem(label, config[1], config[2], cachedStock[label])
         if ok then
           cycleRequested[label] = config[2] or 1
           ae2.clearCraftingCache()
@@ -153,7 +163,9 @@ local function mainLoop()
     end
     lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed }
     serializedStockCache = serialization.serialize({ stock = cachedStock, status = lastCycleStatus })
-    drawScreen(active, cycleRequested, cycleFailed)
+    local queryTime = debugEnabled and (computer.uptime() - startTime) or nil
+    local qCount = debugEnabled and ae2.getQueryCount() or nil
+    drawScreen(active, cycleRequested, cycleFailed, queryTime, qCount)
     logBuffer = {}
   end
 end

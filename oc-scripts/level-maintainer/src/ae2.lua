@@ -13,6 +13,16 @@ local craftingCache = nil
 local craftingCacheTime = 0
 local CRAFTING_CACHE_TTL = 30
 
+local queryCount = 0
+
+function ae2.getQueryCount()
+  return queryCount
+end
+
+function ae2.resetQueryCount()
+  queryCount = 0
+end
+
 local function getCraftable(name)
   local now = computer.uptime()
   if now - cacheTime >= CACHE_TTL then
@@ -24,6 +34,7 @@ local function getCraftable(name)
   if cached ~= nil then
     return cached ~= false and cached or nil
   end
+  queryCount = queryCount + 1
   local results = ME.getCraftables({ ["label"] = name })
   if #results >= 1 then
     itemCache[name] = results[1]
@@ -34,6 +45,7 @@ local function getCraftable(name)
 end
 
 local function getStack(craftable)
+  queryCount = queryCount + 1
   return (craftable.getStack or craftable.getItemStack)(craftable)
 end
 
@@ -42,25 +54,23 @@ local function itemCount(craftable)
   if not item or not item.name then return 0, nil end
   local found
   if item.tag then
+    queryCount = queryCount + 1
     found = ME.getItemInNetwork(item.name, item.damage or 0, item.tag)
   end
   if not found then
+    queryCount = queryCount + 1
     found = ME.getItemInNetwork(item.name, item.damage or 0)
   end
   return found and found.size or 0, item
 end
 
-function ae2.getCount(name, fluidName)
-  if fluidName then
-    local fluid = ME.getFluidInNetwork(fluidName)
-    return fluid and (fluid.size or fluid.amount) or 0
-  end
+function ae2.getCount(name)
   local craftable = getCraftable(name)
   if not craftable then return 0 end
   return itemCount(craftable)
 end
 
-function ae2.requestItem(name, threshold, batch, fluidName, currentCount)
+function ae2.requestItem(name, threshold, batch, currentCount)
   local craftable = getCraftable(name)
   if not craftable then
     return false, name .. " is not craftable"
@@ -68,22 +78,18 @@ function ae2.requestItem(name, threshold, batch, fluidName, currentCount)
   local itemStack
   if threshold ~= nil then
     local count
-    if fluidName then
-      local fluid = ME.getItemInNetwork("ae2fc:fluid_drop", 0, '{Fluid:' .. fluidName .. '}')
-      count = fluid and fluid.size or 0
+    if currentCount then
+      count = currentCount
     else
-      if currentCount then
-        count = currentCount
-      else
-        count, itemStack = itemCount(craftable)
-      end
+      count, itemStack = itemCount(craftable)
     end
     if count >= threshold then return end
   end
   local item = itemStack or getStack(craftable)
-  if item.label ~= name then
-    return false, name .. " label mismatch"
+  if not item or item.label ~= name then
+    return false, name .. " label mismatch or stack could not be resolved"
   end
+  queryCount = queryCount + 1
   local craft = craftable.request(batch)
   while craft.isComputing() do os.sleep(1) end
   if craft.hasFailed() then
@@ -112,6 +118,7 @@ function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
         if cached then fluidName = cached end
       end
       if fluidName then
+        queryCount = queryCount + 1
         local fluid = ME.getFluidInNetwork(fluidName)
         amount = fluid and (fluid.size or fluid.amount) or 0
       else
@@ -120,6 +127,7 @@ function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
     end
     if amount >= threshold then return end
   end
+  queryCount = queryCount + 1
   local craft = craftable.request(batch)
   while craft.isComputing() do os.sleep(1) end
   if craft.hasFailed() then
@@ -140,16 +148,19 @@ function ae2.getFluidCount(name, fluidName)
     if cached then fluidName = cached end
   end
   if not fluidName then return 0 end
+  queryCount = queryCount + 1
   local fluid = ME.getFluidInNetwork(fluidName)
   return fluid and (fluid.size or fluid.amount) or 0
 end
 
-function ae2.crafting(force)
+function ae2.crafting()
   local now = computer.uptime()
-  if force or not craftingCache or now - craftingCacheTime >= CRAFTING_CACHE_TTL then
+  if not craftingCache or now - craftingCacheTime >= CRAFTING_CACHE_TTL then
+    queryCount = queryCount + 1
     local cpus = ME.getCpus()
     local active = {}
     for _, v in pairs(cpus) do
+      queryCount = queryCount + 1
       local output = v.cpu.finalOutput()
       if output then active[output.label] = output.size or 1 end
     end

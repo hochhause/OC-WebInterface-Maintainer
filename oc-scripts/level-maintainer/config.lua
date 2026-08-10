@@ -1,5 +1,6 @@
 return {
   sleep = 10,
+  debug = true,
 
   items = {
     ["Iron Plate"] = {nil, 16},
