@@ -432,6 +432,19 @@ table th:nth-child(7), table td:nth-child(7) {
   cursor: grabbing;
 }
 
+.grab-handle-disabled {
+  opacity: 0.15 !important;
+  cursor: not-allowed !important;
+}
+
+.grab-handle-disabled span {
+  background-color: #444 !important;
+}
+
+.grab-handle-disabled:hover span {
+  background-color: #444 !important;
+}
+
 tr.dragging {
   opacity: 0.3;
   background: #222 !important;

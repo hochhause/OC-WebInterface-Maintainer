@@ -472,6 +472,9 @@ function renderTable() {
   if (activeEl) activeEl.textContent = activeCount
   if (totalEl) totalEl.textContent = totalCount
 
+  const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
+  const grabDisabled = currentSort !== 'custom' && hasCustomOrder
+
   const sortedTargets = getSortedTargets()
   const rows = sortedTargets.map(t => {
     const count = stock[t.label]
@@ -485,7 +488,7 @@ function renderTable() {
     return `
       <tr data-row="${t.label}" class="${rowStatusClass(t.label, t)}" ${opacity}>
         <td>
-          <div class="grab-handle">
+          <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
             <span></span><span></span>
             <span></span><span></span>
             <span></span><span></span>
@@ -708,6 +711,12 @@ function renderTable() {
     row.setAttribute('draggable', 'true')
 
     row.addEventListener('dragstart', (e) => {
+      const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
+      if (currentSort !== 'custom' && hasCustomOrder) {
+        e.preventDefault()
+        showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
+        return
+      }
       if (!dragAllowed) {
         e.preventDefault()
         return
@@ -717,6 +726,16 @@ function renderTable() {
       row.classList.add('dragging')
       e.dataTransfer.effectAllowed = 'move'
     })
+
+    const handle = row.querySelector('.grab-handle')
+    if (handle) {
+      handle.addEventListener('click', (e) => {
+        const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
+        if (currentSort !== 'custom' && hasCustomOrder) {
+          showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
+        }
+      })
+    }
 
     row.addEventListener('dragend', () => {
       if (draggedRow) {

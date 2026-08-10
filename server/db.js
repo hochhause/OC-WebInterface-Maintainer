@@ -31,7 +31,7 @@ db.exec(`
 try { db.exec(`ALTER TABLE targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`) } catch {}
 
 const q = {
-  getTargets: db.prepare('SELECT * FROM targets WHERE network_id = ?'),
+  getTargets: db.prepare('SELECT * FROM targets WHERE network_id = ? ORDER BY rowid ASC'),
   upsertTarget: db.prepare(`
     INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid, enabled)
     VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid, @enabled)
