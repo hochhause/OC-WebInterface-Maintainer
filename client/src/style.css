@@ -1,11 +1,21 @@
+@font-face {
+  font-family: 'Minecraft';
+  src: url('/Minecraft.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
+body, input, button, select, textarea {
+  font-family: 'Minecraft', sans-serif;
+}
+
 body {
-  font-family: sans-serif;
   background: #0f0f0f;
   color: #e0e0e0;
   overflow: hidden;
@@ -34,7 +44,7 @@ input[type="password"] {
   background: #373737;
   border: 2px solid #555;
   color: #e0e0e0;
-  padding: 4px 6px;
+  padding: 2px 6px;
   font-family: inherit;
   font-size: inherit;
   outline: none;
@@ -111,13 +121,14 @@ button:disabled {
   border-bottom: 2px solid #222;
   border-right: 2px solid #222;
   color: #e0e0e0;
-  padding: 4px 10px;
   width: 90px;
+  height: 24px;
   cursor: pointer;
-  font-family: inherit;
-  font-size: inherit;
-  text-align: center;
-  text-shadow: 1px 1px 0 #000;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 2px 2px 0 #000;
+  padding-top: 1px; /* centers pixel font vertically */
 }
 
 .mc-toggle-on {
@@ -217,6 +228,10 @@ tr.status-ok { background: rgba(60, 140, 80, 0.35); }
 tr.status-crafting { background: rgba(60, 110, 200, 0.35); }
 tr.status-error { background: rgba(180, 50, 50, 0.4); }
 
+tr.row-disabled td:not(:nth-child(2)):not(:nth-child(7)) {
+  opacity: 0.65;
+}
+
 /* Item picker overlay */
 .picker-overlay {
   position: fixed;
@@ -298,7 +313,7 @@ table {
 
 th, td {
   text-align: left;
-  padding: 6px 8px;
+  padding: 2px 6px;
   border-bottom: 1px solid #333;
   vertical-align: middle;
 }
@@ -406,7 +421,6 @@ table th:nth-child(7), table td:nth-child(7) {
   display: flex;
   gap: 14px;
   align-items: center;
-  font-size: 0.85rem;
 }
 
 .count-stocked { color: #55ff55; }

@@ -502,10 +502,10 @@ function renderTable() {
     const thresholdVal = formatShort(t.threshold)
     const batchVal = formatShort(t.batch_size ?? 1)
     const enabled = t.enabled !== 0
-    const opacity = enabled ? '' : 'style="opacity:0.35"'
+    const rowClass = `${rowStatusClass(t.label, t)} ${enabled ? '' : 'row-disabled'}`
 
     return `
-      <tr data-row="${t.label}" class="${rowStatusClass(t.label, t)}" ${opacity}>
+      <tr data-row="${t.label}" class="${rowClass}">
         <td>
           <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
             <span></span><span></span>
