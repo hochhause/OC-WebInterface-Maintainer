@@ -228,7 +228,7 @@ tr.status-ok { background: rgba(60, 140, 80, 0.35); }
 tr.status-crafting { background: rgba(60, 110, 200, 0.35); }
 tr.status-error { background: rgba(180, 50, 50, 0.4); }
 
-tr.row-disabled td:not(:nth-child(2)):not(:nth-child(7)) {
+tr.row-disabled td:not(:nth-child(1)):not(:nth-child(2)):not(:nth-child(8)) {
   opacity: 0.65;
 }
 
@@ -309,13 +309,14 @@ tr.row-disabled td:not(:nth-child(2)):not(:nth-child(7)) {
 table {
   border-collapse: collapse;
   width: 100%;
+  table-layout: fixed;
 }
 
 th, td {
   text-align: left;
   padding: 2px 6px;
-  border-bottom: 1px solid #333;
   vertical-align: middle;
+  overflow: hidden;
 }
 
 table input[type="text"] {
@@ -325,26 +326,142 @@ table input[type="text"] {
 /* Stable column widths to prevent layout shifts */
 table th:nth-child(1), table td:nth-child(1) {
   width: 36px;
+  padding: 0;
+}
+table th:nth-child(2), table td:nth-child(2) {
+  width: 36px;
   text-align: center;
   padding-right: 0;
 }
-table th:nth-child(2), table td:nth-child(2) {
+table th:nth-child(3), table td:nth-child(3) {
   width: 110px;
 }
-table th:nth-child(3), table td:nth-child(3) {
+table th:nth-child(4), table td:nth-child(4) {
   /* Flexible */
 }
-table th:nth-child(4), table td:nth-child(4) {
-  width: 100px;
-}
 table th:nth-child(5), table td:nth-child(5) {
-  width: 180px;
+  width: 100px;
 }
 table th:nth-child(6), table td:nth-child(6) {
   width: 180px;
 }
 table th:nth-child(7), table td:nth-child(7) {
+  width: 180px;
+}
+table th:nth-child(8), table td:nth-child(8) {
   width: 96px;
+}
+
+/* Bracket column */
+.bracket-cell {
+  position: relative;
+  padding: 0 !important;
+  overflow: visible;
+  background: #0f0f0f !important;
+  cursor: crosshair;
+}
+
+tr.group-first .bracket-cell::before,
+tr.group-middle .bracket-cell::before,
+tr.group-last .bracket-cell::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  width: 2px;
+  background: #888;
+  pointer-events: none;
+  z-index: 1;
+}
+tr.group-first .bracket-cell::before { top: 50%; bottom: 0; }
+tr.group-middle .bracket-cell::before { top: 0; bottom: 0; }
+tr.group-last .bracket-cell::before { top: 0; bottom: 50%; }
+
+tr.group-first .bracket-cell::after,
+tr.group-last .bracket-cell::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  width: 9px;
+  height: 2px;
+  background: #888;
+  pointer-events: none;
+  z-index: 1;
+}
+tr.group-first .bracket-cell::after { top: 50%; transform: translateY(-50%); }
+tr.group-last .bracket-cell::after { bottom: 50%; transform: translateY(50%); }
+
+/* Bracket drag preview — comes after so it wins over the gray bracket when both classes present */
+tr.group-preview-first .bracket-cell::before,
+tr.group-preview-middle .bracket-cell::before,
+tr.group-preview-last .bracket-cell::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  width: 2px;
+  background: #4499cc;
+  pointer-events: none;
+  z-index: 1;
+}
+tr.group-preview-first .bracket-cell::before { top: 50%; bottom: 0; }
+tr.group-preview-middle .bracket-cell::before { top: 0; bottom: 0; }
+tr.group-preview-last .bracket-cell::before { top: 0; bottom: 50%; }
+
+tr.group-preview-first .bracket-cell::after,
+tr.group-preview-last .bracket-cell::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  width: 9px;
+  height: 2px;
+  background: #4499cc;
+  pointer-events: none;
+  z-index: 1;
+}
+tr.group-preview-first .bracket-cell::after { top: 50%; transform: translateY(-50%); }
+tr.group-preview-last .bracket-cell::after { bottom: 50%; transform: translateY(50%); }
+tr.group-preview-middle .bracket-cell::after { content: none; }
+
+/* Collapsed group row */
+tr.group-collapsed-row {
+  background: rgba(200, 175, 55, 0.18) !important;
+}
+tr.group-collapsed-row:hover {
+  background: rgba(200, 175, 55, 0.26) !important;
+}
+
+.bracket-collapse-zone {
+  cursor: pointer;
+}
+
+.group-name-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: #e8e060;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 2px 4px;
+  width: 100%;
+  cursor: text;
+}
+.group-name-input:focus {
+  border-bottom-color: #aaa;
+  outline: none;
+}
+
+.group-icons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 2px solid transparent;
+}
+
+.group-extra-count {
+  color: #aaa;
+  font-size: 0.85em;
+  padding-left: 4px;
+  white-space: nowrap;
 }
 
 /* Toast Notification System */

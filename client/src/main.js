@@ -41,8 +41,8 @@ function formatCount(n) {
 
 function parseAmount(str) {
   if (!str || str.trim() === '') return null
-  const multipliers = { k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15 }
-  const s = str.toLowerCase().trim().replace(/,/g, '').replace(/(\d+\.?\d*)([kmbtq]+)/g, (_, num, suf) => {
+  const multipliers = { k: 1e3, m: 1e6, b: 1e9, g: 1e9, t: 1e12, q: 1e15 }
+  const s = str.toLowerCase().trim().replace(/,/g, '').replace(/(\d+\.?\d*)([kmbtqg]+)/g, (_, num, suf) => {
     let val = parseFloat(num)
     for (const c of suf) val *= multipliers[c] || 1
     return String(val)
@@ -351,7 +351,10 @@ function updateStockCells() {
       cell.title = count === undefined ? 'Loading...' : String(count)
     }
     const row = document.querySelector(`tr[data-row="${CSS.escape(t.label)}"]`)
-    if (row) row.className = rowStatusClass(t.label, t)
+    if (row) {
+      const keep = ['group-first', 'group-middle', 'group-last', 'row-disabled'].filter(c => row.classList.contains(c))
+      row.className = [rowStatusClass(t.label, t), ...keep].filter(Boolean).join(' ')
+    }
   }
 }
 
@@ -486,6 +489,241 @@ function getSortedTargets() {
   return list
 }
 
+function loadGroups() {
+  if (!networkId) return []
+  const groups = JSON.parse(localStorage.getItem(`maintainer_groups_${networkId}`) || '[]')
+  const validLabels = new Set(targets.map(t => t.label))
+  return groups
+    .map(g => ({ ...g, labels: g.labels.filter(l => validLabels.has(l)) }))
+    .filter(g => g.labels.length >= 2)
+}
+
+function saveGroups(groups) {
+  localStorage.setItem(`maintainer_groups_${networkId}`, JSON.stringify(groups))
+}
+
+function buildRowPlan(sortedTargets, groups) {
+  const labelToGroup = new Map()
+  for (const g of groups) {
+    for (const label of g.labels) labelToGroup.set(label, g)
+  }
+  const plan = []
+  const seen = new Set()
+  for (const t of sortedTargets) {
+    const group = labelToGroup.get(t.label)
+    if (!group) {
+      plan.push({ type: 'item', target: t })
+      continue
+    }
+    if (seen.has(group.id)) continue
+    seen.add(group.id)
+    if (group.collapsed) {
+      plan.push({ type: 'group-collapsed', group })
+    } else {
+      const members = sortedTargets.filter(x => group.labels.includes(x.label))
+      members.forEach((gt, i) => {
+        const pos = i === 0 ? 'first' : i === members.length - 1 ? 'last' : 'middle'
+        plan.push({ type: 'group-' + pos, target: gt, group })
+      })
+    }
+  }
+  return plan
+}
+
+function renderCollapsedGroupRow(group, grabDisabled) {
+  const icons = group.labels.slice(0, 5).map(label => {
+    const reg = registry.find(r => r.label === label)
+    return iconHtml(reg?.x, reg?.y)
+  }).join('')
+  const extra = group.labels.length > 5 ? `<span class="group-extra-count">+${group.labels.length - 5}</span>` : ''
+  const groupTargets = targets.filter(t => group.labels.includes(t.label))
+  const allEnabled = groupTargets.length > 0 && groupTargets.every(t => t.enabled !== 0)
+  return `
+    <tr class="group-collapsed-row" data-group-id="${group.id}">
+      <td class="bracket-cell bracket-collapse-zone" data-group-id="${group.id}"></td>
+      <td>
+        <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
+          <span></span><span></span>
+          <span></span><span></span>
+          <span></span><span></span>
+        </div>
+      </td>
+      <td>
+        <button class="mc-toggle ${allEnabled ? 'mc-toggle-on' : 'mc-toggle-off'} group-toggle-btn" data-group-id="${group.id}">
+          ${allEnabled ? 'Enabled' : 'Disabled'}
+        </button>
+      </td>
+      <td><div class="group-icons">${icons}${extra}</div></td>
+      <td></td>
+      <td colspan="2"><input type="text" class="group-name-input" data-group-id="${group.id}" value="${group.name}"></td>
+      <td><button class="expand-btn" data-group-id="${group.id}">Expand</button></td>
+    </tr>
+  `
+}
+
+function setupBracketDrag(container) {
+  const tbody = container.querySelector('tbody')
+  if (!tbody) return
+
+  function getRows() {
+    return Array.from(tbody.querySelectorAll('tr'))
+  }
+
+  function rowIndexAt(clientY) {
+    const rows = getRows()
+    for (let i = 0; i < rows.length; i++) {
+      const rect = rows[i].getBoundingClientRect()
+      if (clientY >= rect.top && clientY <= rect.bottom) return i
+    }
+    if (rows.length === 0) return -1
+    if (clientY < rows[0].getBoundingClientRect().top) return 0
+    return rows.length - 1
+  }
+
+  function clearPreview() {
+    tbody.querySelectorAll('tr').forEach(r =>
+      r.classList.remove('group-preview-first', 'group-preview-middle', 'group-preview-last')
+    )
+  }
+
+  function setPreview(lo, hi) {
+    clearPreview()
+    const rows = getRows()
+    for (let i = lo; i <= hi; i++) {
+      if (!rows[i]) continue
+      rows[i].classList.add(i === lo ? 'group-preview-first' : i === hi ? 'group-preview-last' : 'group-preview-middle')
+    }
+  }
+
+  function commitGroup(startIdx, endIdx) {
+    const lo = Math.min(startIdx, endIdx)
+    const hi = Math.max(startIdx, endIdx)
+    if (lo === hi) {
+      const rows = getRows()
+      const row = rows[lo]
+      if (!row || !row.dataset.row) return
+      const isGrouped = ['group-first', 'group-middle', 'group-last'].some(c => row.classList.contains(c))
+      if (!isGrouped) return
+      const groups = loadGroups()
+      const g = groups.find(g => g.labels.includes(row.dataset.row))
+      if (!g) return
+      g.collapsed = true
+      saveGroups(groups)
+      renderTable()
+      return
+    }
+
+    const rows = getRows()
+    const groups = loadGroups()
+    const newLabels = []
+    const overlapping = []
+    const seenOverlap = new Set()
+
+    for (let i = lo; i <= hi; i++) {
+      const row = rows[i]
+      if (!row) continue
+      if (row.dataset.row) {
+        newLabels.push(row.dataset.row)
+        const g = groups.find(gr => gr.labels.includes(row.dataset.row))
+        if (g && !seenOverlap.has(g.id)) { seenOverlap.add(g.id); overlapping.push(g) }
+      } else if (row.dataset.groupId) {
+        const g = groups.find(gr => gr.id === parseInt(row.dataset.groupId))
+        if (g) {
+          newLabels.push(...g.labels)
+          if (!seenOverlap.has(g.id)) { seenOverlap.add(g.id); overlapping.push(g) }
+        }
+      }
+    }
+
+    if (newLabels.length < 2) return
+
+    const newLabelSet = new Set(newLabels)
+
+    const kept = groups
+      .map(g => ({ ...g, labels: g.labels.filter(l => !newLabelSet.has(l)) }))
+      .filter(g => g.labels.length >= 2)
+
+    const id = kept.length === 0 ? 1 : Math.max(...kept.map(g => g.id)) + 1
+    const name = overlapping.length > 0 ? overlapping[0].name : 'Group ' + id
+    kept.push({ id, name, labels: newLabels, collapsed: false })
+    saveGroups(kept)
+    renderTable()
+  }
+
+  container.querySelectorAll('td.bracket-cell').forEach(cell => {
+    cell.addEventListener('click', (e) => {
+      if (currentSort !== 'custom') return
+      if (!cell.classList.contains('bracket-collapse-zone')) return
+      const row = cell.closest('tr')
+      const groupId = parseInt(row.dataset.groupId)
+      const groups = loadGroups()
+      const g = groups.find(g => g.id === groupId)
+      if (!g) return
+      g.collapsed = false
+      saveGroups(groups)
+      renderTable()
+    })
+
+    cell.addEventListener('mousedown', (e) => {
+      if (currentSort !== 'custom') return
+      if (cell.classList.contains('bracket-collapse-zone')) return
+      if (e.button !== 0) return
+      e.preventDefault()
+
+      const rows = getRows()
+      const startIdx = rows.indexOf(cell.closest('tr'))
+      if (startIdx === -1) return
+
+      isDragging = true
+      setPreview(startIdx, startIdx)
+
+      function onMove(e) {
+        const cur = rowIndexAt(e.clientY)
+        setPreview(Math.min(startIdx, cur), Math.max(startIdx, cur))
+      }
+
+      function onUp(e) {
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+        document.removeEventListener('keydown', onKey)
+        isDragging = false
+        clearPreview()
+        commitGroup(startIdx, rowIndexAt(e.clientY))
+      }
+
+      function onKey(e) {
+        if (e.key !== 'Escape') return
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+        document.removeEventListener('keydown', onKey)
+        isDragging = false
+        clearPreview()
+      }
+
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp)
+      document.addEventListener('keydown', onKey)
+    })
+
+    cell.addEventListener('contextmenu', (e) => {
+      if (currentSort !== 'custom') return
+      e.preventDefault()
+      const row = cell.closest('tr')
+      const groups = loadGroups()
+      let groupId = null
+      if (row.dataset.groupId) {
+        groupId = parseInt(row.dataset.groupId)
+      } else if (row.dataset.row) {
+        const g = groups.find(g => g.labels.includes(row.dataset.row))
+        if (g) groupId = g.id
+      }
+      if (groupId === null) return
+      saveGroups(groups.filter(g => g.id !== groupId))
+      renderTable()
+    })
+  })
+}
+
 function renderTable() {
   const container = document.getElementById('table-container')
 
@@ -495,17 +733,25 @@ function renderTable() {
   const grabDisabled = currentSort !== 'custom' && hasCustomOrder
 
   const sortedTargets = getSortedTargets()
-  const rows = sortedTargets.map(t => {
+  const groups = currentSort === 'custom' ? loadGroups() : []
+  const plan = buildRowPlan(sortedTargets, groups)
+
+  const rows = plan.map(entry => {
+    if (entry.type === 'group-collapsed') return renderCollapsedGroupRow(entry.group, grabDisabled)
+
+    const t = entry.target
     const count = stock[t.label]
     const stockDisplay = count === undefined ? '...' : formatCount(count)
     const stockTitle = count === undefined ? 'Loading...' : String(count)
     const thresholdVal = formatShort(t.threshold)
     const batchVal = formatShort(t.batch_size ?? 1)
     const enabled = t.enabled !== 0
-    const rowClass = `${rowStatusClass(t.label, t)} ${enabled ? '' : 'row-disabled'}`
+    const groupCls = entry.type !== 'item' ? entry.type : ''
+    const rowClass = [rowStatusClass(t.label, t), enabled ? '' : 'row-disabled', groupCls].filter(Boolean).join(' ')
 
     return `
       <tr data-row="${t.label}" class="${rowClass}">
+        <td class="bracket-cell" data-row="${t.label}"></td>
         <td>
           <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
             <span></span><span></span>
@@ -544,6 +790,7 @@ function renderTable() {
     <table>
       <thead>
         <tr>
+          <th></th>
           <th></th>
           <th></th>
           <th>Item</th>
@@ -632,9 +879,66 @@ function renderTable() {
     })
   })
 
+  container.querySelectorAll('.group-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const groupId = parseInt(btn.dataset.groupId)
+      const groups = loadGroups()
+      const g = groups.find(g => g.id === groupId)
+      if (!g) return
+      const groupTargets = targets.filter(t => g.labels.includes(t.label))
+      const allEnabled = groupTargets.every(t => t.enabled !== 0)
+      await Promise.all(groupTargets.map(t =>
+        saveTarget(t.label, { threshold: t.threshold, batch_size: t.batch_size, is_fluid: t.is_fluid ?? false, enabled: !allEnabled })
+      ))
+      await fetchTargets()
+      render()
+    })
+  })
+
+  container.querySelectorAll('.expand-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const groupId = parseInt(btn.dataset.groupId)
+      const groups = loadGroups()
+      const g = groups.find(g => g.id === groupId)
+      if (!g) return
+      g.collapsed = false
+      saveGroups(groups)
+      renderTable()
+    })
+  })
+
+  container.querySelectorAll('.group-name-input').forEach(input => {
+    let savedName = input.value
+    input.addEventListener('focus', () => { savedName = input.value })
+    input.addEventListener('blur', () => {
+      const groupId = parseInt(input.dataset.groupId)
+      const groups = loadGroups()
+      const g = groups.find(g => g.id === groupId)
+      if (!g) return
+      g.name = input.value.trim() || savedName
+      input.value = g.name
+      saveGroups(groups)
+    })
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') input.blur()
+      if (e.key === 'Escape') { input.value = savedName; input.blur() }
+    })
+  })
+
   renderAddPanel()
+  setupBracketDrag(container)
 
   let draggedRow = null
+
+  function moveDraggedTo(e, targetRow) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (!draggedRow || targetRow === draggedRow) return
+    if (targetRow.parentNode !== draggedRow.parentNode) return
+    const rect = targetRow.getBoundingClientRect()
+    const anchor = (e.clientY - rect.top) / (rect.bottom - rect.top) > 0.5 ? targetRow.nextSibling : targetRow
+    targetRow.parentNode.insertBefore(draggedRow, anchor)
+  }
 
   container.querySelectorAll('tr[data-row]').forEach(row => {
     let dragAllowed = false
@@ -663,7 +967,7 @@ function renderTable() {
 
     const handle = row.querySelector('.grab-handle')
     if (handle) {
-      handle.addEventListener('click', (e) => {
+      handle.addEventListener('click', () => {
         const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
         if (currentSort !== 'custom' && hasCustomOrder) {
           showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
@@ -674,22 +978,42 @@ function renderTable() {
     row.addEventListener('dragend', () => {
       if (draggedRow) {
         draggedRow.classList.remove('dragging')
+        const label = draggedRow.dataset.row
+        draggedRow = null
+        isDragging = false
+        saveCustomOrder()
+        autoJoinGroup(label)
+      } else {
+        isDragging = false
+      }
+    })
+
+    row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
+  })
+
+  container.querySelectorAll('tr[data-group-id]').forEach(row => {
+    let dragAllowed = false
+    row.addEventListener('mousedown', (e) => {
+      dragAllowed = !!e.target.closest('.grab-handle')
+    })
+    row.setAttribute('draggable', 'true')
+    row.addEventListener('dragstart', (e) => {
+      if (currentSort !== 'custom') { e.preventDefault(); return }
+      if (!dragAllowed) { e.preventDefault(); return }
+      draggedRow = row
+      isDragging = true
+      row.classList.add('dragging')
+      e.dataTransfer.effectAllowed = 'move'
+    })
+    row.addEventListener('dragend', () => {
+      if (draggedRow) {
+        draggedRow.classList.remove('dragging')
         draggedRow = null
       }
       isDragging = false
       saveCustomOrder()
     })
-
-    row.addEventListener('dragover', (e) => {
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'move'
-      const targetRow = e.target.closest('tr[data-row]')
-      if (targetRow && targetRow !== draggedRow && targetRow.parentNode === draggedRow.parentNode) {
-        const rect = targetRow.getBoundingClientRect()
-        const next = (e.clientY - rect.top) / (rect.bottom - rect.top) > 0.5
-        targetRow.parentNode.insertBefore(draggedRow, next ? targetRow.nextSibling : targetRow)
-      }
-    })
+    row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
   })
 }
 
@@ -789,8 +1113,56 @@ function renderAddPanel() {
   }
 }
 
+function autoJoinGroup(label) {
+  if (currentSort !== 'custom') return
+  const tbody = document.querySelector('table tbody')
+  if (!tbody) return
+  const row = tbody.querySelector(`tr[data-row="${CSS.escape(label)}"]`)
+  if (!row) return
+
+  let groups = loadGroups()
+
+  // Remove from current group if it's in one
+  const currentGroup = groups.find(g => g.labels.includes(label))
+  if (currentGroup) {
+    groups = groups
+      .map(g => g.id === currentGroup.id ? { ...g, labels: g.labels.filter(l => l !== label) } : g)
+      .filter(g => g.labels.length >= 2)
+    saveGroups(groups)
+  }
+
+  // Only auto-join if both immediate neighbors are regular item rows in the same group
+  const prev = row.previousElementSibling
+  const next = row.nextElementSibling
+  if (!prev?.dataset?.row || !next?.dataset?.row) { renderTable(); return }
+
+  const labelToGroup = new Map()
+  for (const g of groups) for (const l of g.labels) labelToGroup.set(l, g)
+
+  const prevGroup = labelToGroup.get(prev.dataset.row)
+  const nextGroup = labelToGroup.get(next.dataset.row)
+  if (!prevGroup || !nextGroup || prevGroup.id !== nextGroup.id) { renderTable(); return }
+
+  groups = groups.map(g => g.id === prevGroup.id ? { ...g, labels: [...g.labels, label] } : g)
+  saveGroups(groups)
+  renderTable()
+}
+
 function saveCustomOrder() {
-  const rowLabels = Array.from(document.querySelectorAll('tr[data-row]')).map(row => row.dataset.row)
+  const groups = loadGroups()
+  const seenGroupIds = new Set()
+  const rowLabels = []
+  for (const row of document.querySelectorAll('table tbody tr')) {
+    if (row.dataset.row) {
+      rowLabels.push(row.dataset.row)
+    } else if (row.dataset.groupId) {
+      const gid = parseInt(row.dataset.groupId)
+      if (seenGroupIds.has(gid)) continue
+      seenGroupIds.add(gid)
+      const g = groups.find(g => g.id === gid)
+      if (g) rowLabels.push(...g.labels)
+    }
+  }
   if (currentSort !== 'custom') {
     const oldCustomOrder = localStorage.getItem(`maintainer_custom_order_${networkId}`)
     const oldSortMode = currentSort
