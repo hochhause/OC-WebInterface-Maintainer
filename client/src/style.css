@@ -168,7 +168,6 @@ button:disabled {
 
 .page-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   margin-bottom: 0.5rem;
 }
@@ -391,11 +390,29 @@ table th:nth-child(7), table td:nth-child(7) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 1.5rem;
+  margin-top: 1rem;
   margin-bottom: 0.75rem;
   font-size: 0.9rem;
   color: #aaa;
 }
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.status-counts {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.count-stocked { color: #55ff55; }
+.count-crafting { color: #6699ff; }
+.count-failed { color: #ff5555; }
+.count-disabled { color: #999; }
 
 .sort-container {
   display: flex;

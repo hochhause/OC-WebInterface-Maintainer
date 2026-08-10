@@ -321,7 +321,28 @@ function connectWs() {
   ws.onclose = () => setTimeout(connectWs, 3000)
 }
 
+function updateStatusCounts() {
+  const el = document.getElementById('status-counts')
+  if (!el) return
+  const enabled = targets.filter(t => t.enabled !== 0)
+  const disabled = targets.length - enabled.length
+  const failed = enabled.filter(t => itemStatus.failed?.[t.label]).length
+  const crafting = enabled.filter(t => itemStatus.crafting?.[t.label] && !itemStatus.failed?.[t.label]).length
+  const stocked = enabled.filter(t => {
+    if (itemStatus.failed?.[t.label] || itemStatus.crafting?.[t.label]) return false
+    const count = stock[t.label]
+    return t.threshold === null || (count !== undefined && count >= t.threshold)
+  }).length
+  el.innerHTML = `
+    <span class="count-stocked">${stocked} stocked</span>
+    <span class="count-crafting">${crafting} crafting</span>
+    <span class="count-failed">${failed} failed</span>
+    <span class="count-disabled">${disabled} disabled</span>
+  `
+}
+
 function updateStockCells() {
+  updateStatusCounts()
   for (const t of targets) {
     const cell = document.getElementById(`stock-${t.label}`)
     if (cell) {
@@ -349,21 +370,23 @@ function render() {
           </a>
         </span>
       </div>
-      <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
     </div>
     <div id="network-bar"></div>
     <div class="table-toolbar">
-      <div class="targets-count"><span id="active-count">0</span> / <span id="total-count">0</span> items active</div>
-      <div class="sort-container">
-        <label for="sort-select">Sort by:</label>
-        <select id="sort-select">
-          <option value="default">Default</option>
-          <option value="az">Alphabetical A-Z</option>
-          <option value="za">Alphabetical Z-A</option>
-          <option value="threshold-lh">Threshold (Low to High)</option>
-          <option value="threshold-hl">Threshold (High to Low)</option>
-          <option value="custom">Custom (Drag & Drop)</option>
-        </select>
+      <div id="status-counts" class="status-counts"></div>
+      <div class="toolbar-right">
+        <div class="sort-container">
+          <label for="sort-select">Sort by:</label>
+          <select id="sort-select">
+            <option value="default">Default</option>
+            <option value="az">Alphabetical A-Z</option>
+            <option value="za">Alphabetical Z-A</option>
+            <option value="threshold-lh">Threshold (Low to High)</option>
+            <option value="threshold-hl">Threshold (High to Low)</option>
+            <option value="custom">Custom (Drag & Drop)</option>
+          </select>
+        </div>
+        <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
       </div>
     </div>
     <div id="main-content">
@@ -466,13 +489,7 @@ function getSortedTargets() {
 function renderTable() {
   const container = document.getElementById('table-container')
 
-  // Update active/total count toolbar
-  const activeCount = targets.filter(t => t.enabled !== 0).length
-  const totalCount = targets.length
-  const activeEl = document.getElementById('active-count')
-  const totalEl = document.getElementById('total-count')
-  if (activeEl) activeEl.textContent = activeCount
-  if (totalEl) totalEl.textContent = totalCount
+  updateStatusCounts()
 
   const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
   const grabDisabled = currentSort !== 'custom' && hasCustomOrder
