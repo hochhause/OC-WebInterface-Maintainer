@@ -107,48 +107,51 @@ if msg:sub(1, 8) == "setsleep" then
   log("targets updated from web")
 end
 
-while true do
-  local deadline = computer.uptime() + currentSleep
+local function mainLoop()
+  event.listen("modem_message", handleModem)
+  while true do
+    os.sleep(currentSleep)
 
-  while computer.uptime() < deadline do
-    local remaining = deadline - computer.uptime()
-    local _, _, _, _, _, msg = event.pull(remaining, "modem_message")
-    if msg then handleModem(nil, nil, nil, nil, nil, msg) end
-  end
+    local active = ae2.crafting()
+    local cycleRequested = {}
+    local cycleFailed = {}
 
-  local active = ae2.crafting()
-  local cycleRequested = {}
-  local cycleFailed = {}
-
-  for label, config in pairs(items) do
-    if not active[label] then
-      local ok, msg = ae2.requestItem(label, config[1], config[2], config[3])
-      if ok then
-        cycleRequested[label] = config[2] or 1
-      elseif msg then
-        cycleFailed[label] = msg
-        log(msg)
+    for label, config in pairs(items) do
+      if not active[label] then
+        local ok, msg = ae2.requestItem(label, config[1], config[2], config[3])
+        if ok then
+          cycleRequested[label] = config[2] or 1
+        elseif msg then
+          cycleFailed[label] = msg
+          log(msg)
+        end
       end
     end
-  end
 
-  for label, config in pairs(fluids) do
-    if not active[label] then
-      local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3])
-      if ok then
-        cycleRequested[label] = config[2] or 1
-      elseif msg then
-        cycleFailed[label] = msg
-        log(msg)
+    for label, config in pairs(fluids) do
+      if not active[label] then
+        local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3])
+        if ok then
+          cycleRequested[label] = config[2] or 1
+        elseif msg then
+          cycleFailed[label] = msg
+          log(msg)
+        end
       end
     end
-  end
 
-  local managedActive = {}
-  for label, count in pairs(active) do
-    if items[label] or fluids[label] then managedActive[label] = count end
+    local managedActive = {}
+    for label, count in pairs(active) do
+      if items[label] or fluids[label] then managedActive[label] = count end
+    end
+    lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed }
+    drawScreen(active, cycleRequested, cycleFailed)
+    logBuffer = {}
   end
-  lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed }
-  drawScreen(active, cycleRequested, cycleFailed)
-  logBuffer = {}
+end
+
+local ok, err = pcall(mainLoop)
+event.ignore("modem_message", handleModem)
+if not ok then
+  print("Stopped: " .. tostring(err))
 end

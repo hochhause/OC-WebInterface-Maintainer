@@ -1,4 +1,5 @@
 local component = require("component")
+local computer = require("computer")
 local ME = component.me_interface
 
 local ae2 = {}
@@ -9,7 +10,7 @@ local cacheTime = 0
 local CACHE_TTL = 600
 
 local function getCraftable(name)
-  local now = os.time()
+  local now = computer.uptime()
   if now - cacheTime >= CACHE_TTL then
     itemCache = {}
     fluidNameCache = {}
