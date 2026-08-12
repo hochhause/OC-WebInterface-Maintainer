@@ -105,3 +105,19 @@ Maps reset on restart which is acceptable for a shield, not an audit system.
 - **Delivery: separate PR** on branch maintainer-scheduler cut from main; must
   auto-merge with both main and multiuser-web (new-file isolation, injected
   tenancy resolver, one-line wire-ups only, 3-way local merge test before push).
+
+## D006 — Scheduler plan revisions: tick clock, TPS gate revived, branch retarget
+
+**Date:** 2026-08-12 · **Status:** APPROVED plan (revises [[DECISIONS#D005]]) · **Detail:** [[SCHEDULER_PLAN]]
+
+- **Schedule clock = in-game ticks**, not real time. Rationale (user): schedules
+  should stretch when the MC server slows (machines slow too) and must not shift
+  or burst after a freeze. worldTicks via os.time() conversion; per-loop delta
+  clamped against /time set and bed-skips. Intervals configured in seconds,
+  interpreted as game-seconds (x20 ticks).
+- **TPS gate revived** (time-of-day + player gates stay discarded): local
+  measurement (tick delta vs computer.uptime over rolling window), optional
+  per-group min_tps, TPS shown on website. Works serverless.
+- **Branch retarget:** maintainer-scheduler now cut from and PRs into
+  multiuser-web; main is no longer a merge target. Dual-merge machinery from
+  D005 (injected resolver, byte-identical docs, 3-way merge tests) void.

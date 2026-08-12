@@ -48,10 +48,12 @@ set-and-forget, users tolerate slowdown. See [[DECISIONS#D004]].
 
 ## Planned: scheduler feature set (2026-08-12, plan only)
 
-CPU limit · server-side groups · per-group schedules · run-now buttons · local
-state fallback. See [[SCHEDULER_PLAN]] · [[DECISIONS#D005]]. Ships as separate
-branch/PR `maintainer-scheduler`.
+CPU limit · server-side groups · per-group schedules on **in-game tick clock** ·
+run-now buttons · local state fallback · per-group TPS gate + live TPS display.
+See [[SCHEDULER_PLAN]] · [[DECISIONS#D005]] · [[DECISIONS#D006]]. Ships as
+separate branch `maintainer-scheduler`, PR targets `multiuser-web` (not main).
 
 ### Discarded at planning
 
-- Time-of-day / players-online gates per group (incl. TPS variant) — not worth the time.
+- Time-of-day / players-online gates per group — not worth the time.
+  (TPS gate initially discarded with them, revived in D006.)
