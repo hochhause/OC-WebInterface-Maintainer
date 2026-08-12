@@ -533,6 +533,56 @@ tr.group-collapsed-row:hover {
   padding-top: 6px;
 }
 
+/* Collapsed by default: a dozen groups' worth of controls would otherwise own
+   the page, and an interval is something you set once. */
+.schedule-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid #232323;
+  padding: 6px 2px;
+  min-width: 0;
+  color: #9a9a9a;
+  font-size: 0.85rem;
+  text-align: left;
+  text-shadow: none;
+}
+
+.schedule-toggle:hover:not(:disabled) {
+  background: #262626;
+  color: #ddd;
+}
+
+.schedule-caret {
+  color: #777;
+  width: 10px;
+}
+
+.schedule-toggle-label {
+  color: #ccc;
+  white-space: nowrap;
+}
+
+.schedule-summary {
+  color: #777;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.schedule-groups[hidden] {
+  display: none;
+}
+
+.schedule-muted {
+  color: #666;
+}
+
 .run-now-btn {
   min-width: 0;
   padding: 3px 10px;

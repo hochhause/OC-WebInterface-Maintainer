@@ -26,6 +26,9 @@ let pendingAdd = null
 let addDefaults = { threshold: null, batch_size: 1, enabled: true }
 let isDirty = false
 let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
+// Schedules are set-and-forget, and a network with a dozen groups would other-
+// wise spend half the page on rows that say "on the default schedule".
+let schedulesOpen = localStorage.getItem('maintainer_schedules_open') === 'true'
 let isDragging = false
 // Run-now is a counter the maintainer picks up on its next poll, so the button
 // stays in a "queued" state until a status arrives that was measured after the click.
@@ -1349,8 +1352,44 @@ function renderSchedulePanel() {
   const list = loadGroups()
   const scheduled = list.filter(g => g.interval_s)
   const defaultAge = groupAge(0)
+  const gatedNow = g => g.min_tps !== null && g.min_tps !== undefined
+    && typeof itemStatus.tps === 'number' && itemStatus.tps < g.min_tps
 
-  const rowsHtml = [`
+  // What the toggle says while it is shut: enough to see the schedule at a
+  // glance without opening anything.
+  const summary = scheduled.length === 0
+    ? 'all on the default schedule'
+    : scheduled.map(g => `${escapeHtml(g.name)} ${g.interval_s}s`).join(' &middot; ')
+      + (list.length > scheduled.length ? ` &middot; ${list.length - scheduled.length} on default` : '')
+
+  const held = list.filter(gatedNow).length
+
+  const groupRows = list.map(g => {
+    const own = !!g.interval_s
+    const age = groupAge(g.id)
+    const pending = !!pendingRun[String(g.id)]
+    return `
+      <div class="schedule-row">
+        <span class="schedule-name">${escapeHtml(g.name)}</span>
+        <label class="schedule-field">every
+          <input type="number" min="5" max="86400" class="schedule-interval" data-group-id="${g.id}"
+            value="${g.interval_s ?? ''}" placeholder="${maintainerSleep}"> s</label>
+        <label class="schedule-field" title="The group's timer only fires while the measured server TPS is at least this high.">min TPS
+          <input type="number" min="0" max="20" step="0.5" class="schedule-tps" data-group-id="${g.id}"
+            value="${g.min_tps ?? ''}" placeholder="off"></label>
+        ${gatedNow(g) ? '<span class="schedule-age schedule-gated">TPS gate closed</span>' : ''}
+        ${own
+          // Only a group with its own timer has an age of its own -- otherwise it
+          // is the default schedule's, already shown on the row above.
+          ? `<span class="schedule-age">${age === null ? '' : 'checked ' + formatAge(age)}</span>
+             <button class="run-now-btn" data-run="${g.id}" ${pending ? 'disabled' : ''}>${pending ? 'queued...' : 'Run now'}</button>`
+          : '<span class="schedule-age schedule-muted">default schedule</span>'}
+      </div>
+    `
+  }).join('')
+
+  container.innerHTML = `
+    <div class="inventory-title">Schedules</div>
     <div class="schedule-row">
       <span class="schedule-name">Default schedule</span>
       <span class="schedule-detail">every ${maintainerSleep}s &middot; ungrouped items${
@@ -1360,38 +1399,25 @@ function renderSchedulePanel() {
         ${pendingRun.default ? 'queued...' : 'Run now'}
       </button>
     </div>
-  `]
-
-  for (const g of list) {
-    const own = !!g.interval_s
-    const age = groupAge(own ? g.id : 0)
-    const gated = g.min_tps !== null && g.min_tps !== undefined
-      && typeof itemStatus.tps === 'number' && itemStatus.tps < g.min_tps
-    const pending = !!pendingRun[String(g.id)]
-    rowsHtml.push(`
-      <div class="schedule-row">
-        <span class="schedule-name">${escapeHtml(g.name)}</span>
-        <label class="schedule-field">every
-          <input type="number" min="5" max="86400" class="schedule-interval" data-group-id="${g.id}"
-            value="${g.interval_s ?? ''}" placeholder="${maintainerSleep}"> s</label>
-        <label class="schedule-field" title="The group's timer only fires while the measured server TPS is at least this high.">min TPS
-          <input type="number" min="0" max="20" step="0.5" class="schedule-tps" data-group-id="${g.id}"
-            value="${g.min_tps ?? ''}" placeholder="off"></label>
-        <span class="schedule-age">${gated
-          ? '<span class="schedule-gated">TPS gate closed</span>'
-          : (age === null ? '' : 'checked ' + formatAge(age))}</span>
-        ${own
-          ? `<button class="run-now-btn" data-run="${g.id}" ${pending ? 'disabled' : ''}>${pending ? 'queued...' : 'Run now'}</button>`
-          : '<span class="schedule-detail">on the default schedule</span>'}
-      </div>
-    `)
-  }
-
-  container.innerHTML = `
-    <div class="inventory-title">Schedules</div>
-    ${rowsHtml.join('')}
-    ${list.length === 0 ? '<div class="schedule-hint">Group rows together in Custom sorting to give them their own interval.</div>' : ''}
+    ${list.length === 0
+      ? '<div class="schedule-hint">Group rows together in Custom sorting to give them their own interval.</div>'
+      : `<button id="schedule-toggle" class="schedule-toggle" aria-expanded="${schedulesOpen}">
+           <span class="schedule-caret">${schedulesOpen ? '&#9662;' : '&#9656;'}</span>
+           <span class="schedule-toggle-label">${list.length} group${list.length === 1 ? '' : 's'}</span>
+           <span class="schedule-summary">${schedulesOpen ? '' : summary}</span>
+           ${held ? `<span class="schedule-gated">${held} held by TPS</span>` : ''}
+         </button>
+         <div class="schedule-groups" ${schedulesOpen ? '' : 'hidden'}>${groupRows}</div>`}
   `
+
+  const toggle = container.querySelector('#schedule-toggle')
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      schedulesOpen = !schedulesOpen
+      localStorage.setItem('maintainer_schedules_open', String(schedulesOpen))
+      renderSchedulePanel()
+    })
+  }
 
   container.querySelectorAll('.run-now-btn').forEach(btn => {
     btn.addEventListener('click', () => {
