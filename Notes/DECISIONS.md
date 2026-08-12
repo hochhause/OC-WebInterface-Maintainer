@@ -85,3 +85,23 @@ login/sync limiters), not express-rate-limit:
 **Why not fancier.** No accounts to key on (see [[DECISIONS#D001]] — keys are the
 only identity), traffic profile is tiny (connector 6 req/min), and in-memory
 Maps reset on restart which is acceptable for a shield, not an audit system.
+
+## D005 — Scheduler feature set: decisions locked (planning, no code)
+
+**Date:** 2026-08-12 · **Status:** APPROVED plan · **Detail:** [[SCHEDULER_PLAN]]
+
+- **CPU limit:** global per network. Budget computed once at cycle start from a
+  fresh getCpus read (idle count + managedActive), decremented per submit. Capping
+  by idle CPUs even at cpu_limit=0 removes "no free CPU" request failures.
+- **Groups move server-side** (currently browser localStorage), custom sort order
+  too — also fixes groups not syncing between browsers on the same network.
+- **Per-group intervals** run locally on the maintainer (uptime-based), fire only
+  from the single main loop (idle-only by construction).
+- **Run-now:** per-group + global buttons on the web; server-side run_seq counters
+  delivered via the normal connector poll (~10s latency).
+- **Local persistence:** maintainer writes every accepted config push to a state
+  file, loads on boot -> full function through web outages, serverless mode supported.
+- **Time/player gates: DISCARDED** (not worth the time). TPS gating died with it.
+- **Delivery: separate PR** on branch maintainer-scheduler cut from main; must
+  auto-merge with both main and multiuser-web (new-file isolation, injected
+  tenancy resolver, one-line wire-ups only, 3-way local merge test before push).

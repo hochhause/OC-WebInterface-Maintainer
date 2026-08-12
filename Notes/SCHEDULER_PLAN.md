@@ -1,6 +1,8 @@
-# Plan — CPU limit · per-group schedules · time/player gates
+# Plan — CPU limit · per-group schedules · run-now
 
-**Status:** PROPOSED, no code. Branch `multiuser-web`. See [[DECISIONS#D001]] for tenancy model.
+**Status:** APPROVED 2026-08-12 (decisions locked, see [[DECISIONS#D005]]), no code yet.
+Branch `multiuser-web`. See [[DECISIONS#D001]] for tenancy model.
+Time/player gates (former Feature 3): **DISCARDED** — not worth the time.
 
 ## Verified facts (read from code, 2026-08-12)
 
@@ -30,19 +32,26 @@
 **Config:** `cpu_limit` int per network. `0` = off. `+X` = at most X simultaneous
 jobs *started by this maintainer*. `-X` = always leave X CPUs idle for humans.
 
-**Mechanic (maintainer, inside existing cycle):**
-- `+X`: count of `managedActive` (already computed each cycle,
-  [maintainer.lua:160-163](../oc-scripts/level-maintainer/maintainer.lua)) ≥ X → skip
-  further `requestItem/requestFluid` this cycle.
-- `-X`: `idle = #getCpus() - busy` (busy = `finalOutput() ~= nil`, F2); before EACH
-  submit require `idle > X`, decrement local `idle` after a successful submit.
-- New per-item status `waiting_cpu` in the status payload → web shows amber "waiting
-  for CPU" instead of nothing.
+**Mechanic (locked): compute a job budget once at cycle start, spend it down.**
 
-**Precision note:** `craftingCache` TTL is 30s — stale counts could over-submit.
-Fix: refresh CPU state once at cycle start + decrement locally per submit within the
-cycle (no extra ME calls mid-cycle). Races with players submitting crafts manually
-are inherent and acceptable (limit is a courtesy, not a mutex).
+```
+at cycle start (fresh getCpus read, ignore 30s cache):
+  idle          = #cpus - busy            (busy = finalOutput() ~= nil, F2)
+  budget        = idle                    -- never submit into 0 free CPUs
+  if cpu_limit > 0: budget = min(budget, cpu_limit - #managedActive)
+  if cpu_limit < 0: budget = min(budget, idle - |cpu_limit|)
+each successful request: budget -= 1; budget == 0 → stop submitting this cycle
+```
+
+Side benefit (user-called): capping by `idle` even with `cpu_limit=0` eliminates
+the current "failed to request" spam when all CPUs are occupied — requests that
+can't get a CPU are simply deferred to the next cycle as `waiting_cpu`.
+
+- New per-item status `waiting_cpu` in the status payload → web shows amber
+  "waiting for CPU" instead of a failure.
+- Races with players submitting crafts manually mid-cycle are inherent and
+  acceptable (limit is a courtesy, not a mutex).
+- Scope: **global per network** (locked).
 
 **Touches:** ae2.lua (+~15 lines `idleCpus()`), maintainer loop gate (+~15), settings
 table + one column, settings UI field, sync payload field.
@@ -85,43 +94,78 @@ once ⇒ acceptable (one full check).
 stale on the website. Status payload gains `last_checked` per group; web renders
 "checked 23m ago" on collapsed group rows. Without this, stale counts look like bugs.
 
-**Protocol:** sync response + tunnel push gain `groups:[{id, interval_s, gate_open}]`
+**Protocol:** sync response + tunnel push gain `groups:[{id, interval_s, run_seq}]`
 and `group_id` per target. Tunnel messages get chunked (`part i/n` + reassembly,
 ~20 lines each side) — fixes the pre-existing F3 risk while we're in there.
 
-**Touches:** db.js, 4-5 API routes, client group code rewrite (localStorage → API,
-the drag/drop handlers keep their shape, only load/save changes), connector
-passthrough, maintainer scheduler, chunking both sides.
+**Run-now buttons (locked, user request):**
+- Website: one global button (fires the default schedule — ungrouped items plus
+  groups without a custom interval) and one button per group that has its own
+  interval.
+- Mechanic: server keeps a `run_seq` counter per group + one for the default
+  schedule; the button bumps it (`POST /api/run-now[/:groupId]`). Counters ride
+  the normal sync response; the maintainer remembers the last seq it saw per
+  group and when a counter increases sets that group's `nextRun = now`.
+- Latency = one connector poll (≤10s at defaults) — the button shows "queued…"
+  until the next stock push confirms, so it doesn't feel dead.
+- Reboot loses the maintainer's seq markers → at worst one redundant check cycle
+  after reboot. Harmless, no persistence needed for the seqs themselves.
+
+**Local persistence / serverless mode (locked, user requirement):**
+The maintainer writes every accepted config push (targets, groups, intervals,
+cpu_limit) to a local state file and loads it on boot. Consequences:
+- Prolonged web outage: maintainer keeps running its full schedule from the
+  local copy — the web is a *editor* for the config, not its runtime home.
+- Fully serverless use stays possible: no connector, hand-edit the state file
+  (or keep the legacy `config.lua` items table as the seed).
+- File lives on the maintainer's disk (`/home/maintainer-state.lua`,
+  `serialization.serialize` format, human-editable).
+
+**Touches:** db.js, 4-5 API routes (+run-now), client group code rewrite
+(localStorage → API, the drag/drop handlers keep their shape, only load/save
+changes), run-now buttons, connector passthrough, maintainer scheduler + state
+file, chunking both sides.
 
 ---
 
-## Feature 3 — Time / player-count gates per group  ·  size M
+## ~~Feature 3 — Time / player-count gates~~  ·  DISCARDED 2026-08-12
 
-**Answer to the feasibility question:**
+Not worth the time (user call). For the record: IRL time was trivial (server
+clock), player count needed a Server List Ping from the web server (no survival
+OC component exposes it), TPS gating was a fully-local alternative signal.
+Revive from git history if ever wanted.
 
-| Signal | From OC? | Verdict |
-|---|---|---|
-| IRL time | No (F4) | **Trivial via web server** — it IS a real computer with a real clock. Zero new parts. |
-| Players online | No (F5) | **Not from OC in survival.** But the web server can query the MC server's public address with a Server List Ping (status protocol, unauthenticated, ~50 lines of raw TCP, no dependency) → `players.online`. |
-| Server load (the real goal?) | Yes | TPS estimate, fully local: world-time progression (`os.time`) vs real seconds (`computer.uptime`) drift ⇒ current TPS. No config, works offline. |
+---
 
-**Design — evaluate gates on the web server, ship booleans:**
-- Group gate config (JSON): `{windows:[{days,from,to}], tz, min_players, max_players}`
-- Server evaluates each sync → `gate_open: bool` per group. Maintainer just consumes it.
-- Why server-side: single source of real time, per-network `tz` (IANA name — server
-  may run UTC, user thinks in local time), SLP result cached ~60s, and the OC side
-  stays dumb.
-- **Failure mode:** web unreachable → maintainer keeps last-known gate states and
-  local intervals keep running; maintainer with no web configured at all → gates
-  default OPEN. (Standalone operation stays intact — the two-computer isolation
-  argument, C2.)
-- SLP needs per-network `mc_host:mc_port` setting + only works for publicly
-  pingable servers. Singleplayer: player gate is meaningless anyway; time gate
-  still works. TPS gate could be added later as a local alternative — out of
-  scope for v1 unless you want it.
+## Branch & merge strategy (locked, user requirement)
 
-**Touches:** gate evaluator + SLP client on server, group settings UI (time window
-picker, player min/max), settings columns. Cheap *once Feature 2 exists*.
+These features ship as a **separate PR** from the multiuser build and must merge
+cleanly with BOTH `main` and `multiuser-web`.
+
+- Branch `maintainer-scheduler`, cut from `main` (not from `multiuser-web`).
+- **New-file isolation.** All logic goes in files neither branch touches:
+  - `oc-scripts/level-maintainer/src/scheduler.lua`, `src/state.lua` (persistence),
+    `src/chunk.lua` (tunnel chunking, shared with connector)
+  - `server/groups.js` (schema + queries + routes in one module)
+  - `client/src/groups-api.js`
+- **Shared files get one-line wire-ups only**, placed at insertion points whose
+  surrounding lines are identical in both worlds (end-of-file mounts, top-of-file
+  requires). `multiuser-web` rewrote `server/index.js` almost entirely — any edit
+  to a rewritten region WILL conflict, so the scheduler branch may not restructure
+  shared code, only insert.
+- **Tenancy is injected, not assumed.** `server/groups.js` exports
+  `mount(app, getNetworkId)`: `main` passes a param-based resolver,
+  `multiuser-web` passes `req => req.networkId`. The module itself stays
+  identical bytes in both worlds. (Groups schema keys on `network_id`, which
+  both worlds already use in every table.)
+- **Docs:** this plan file must stay byte-identical on both branches (identical
+  additions auto-merge). `DECISIONS.md`/`Features.md` histories stay on
+  `multiuser-web` only — appending to them from two branches cannot merge clean.
+- **Verification protocol, before every push of the scheduler branch:**
+  1. throwaway of `main` + `git merge --no-ff maintainer-scheduler` → must auto-merge
+  2. throwaway of `multiuser-web` + same merge → must auto-merge
+  3. throwaway of `main` + merge `multiuser-web` + merge `maintainer-scheduler`
+     → must auto-merge (final-state simulation)
 
 ---
 
@@ -131,16 +175,17 @@ picker, player min/max), settings columns. Cheap *once Feature 2 exists*.
 |---|---|---|---|
 | 1 | CPU limit | S (~½ day) | nothing — can ship alone |
 | 2 | Groups → server + migration | M-L | nothing |
-| 3 | Per-group scheduler + chunked tunnel | M | 2 |
-| 4 | Time/player gates | M (~1 day) | 2, 3 |
+| 3 | Per-group scheduler + state file + chunked tunnel + run-now | M | 2 |
 
-Feature 2+3 is the bulk (~2-4 focused days): the maintainer loop rewrite is easy,
-the client group-storage refactor is the grind.
+2+3 is the bulk (~2-4 focused days): the maintainer loop rewrite is easy, the
+client group-storage refactor is the grind, and the both-ways merge constraint
+adds design tax on the server routes.
 
-## Open decisions (need your call before coding)
+## Decisions — RESOLVED 2026-08-12
 
-1. **Custom sort order server-side too?** Plan assumes YES (groups break otherwise).
-2. **Gate on web outage:** keep last-known state indefinitely (plan assumes this) or
-   fail open after N hours?
-3. **CPU limit scope:** global per network (plan assumes) or per-group later?
-4. **TPS-based gating** as a v1 alternative to player count, or later/never?
+1. Custom sort order server-side: **YES**.
+2. Web outage: maintainer persists last-accepted config locally and runs from it
+   indefinitely; serverless operation is a supported mode.
+3. CPU limit scope: **global per network**.
+4. TPS gating: discarded with Feature 3.
+5. Separate PR; branch from `main`; must auto-merge with both target branches.

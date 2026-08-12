@@ -45,3 +45,13 @@ set-and-forget, users tolerate slowdown. See [[DECISIONS#D004]].
 - `/api/networks` endpoint (enumerated all tenants).
 - Separate BROWSER_PASSWORD vs API_KEY for new installs (merged into one key;
   kept only for legacy `main`).
+
+## Planned: scheduler feature set (2026-08-12, plan only)
+
+CPU limit · server-side groups · per-group schedules · run-now buttons · local
+state fallback. See [[SCHEDULER_PLAN]] · [[DECISIONS#D005]]. Ships as separate
+branch/PR `maintainer-scheduler`.
+
+### Discarded at planning
+
+- Time-of-day / players-online gates per group (incl. TPS variant) — not worth the time.
