@@ -64,3 +64,24 @@ Only GTNH 2.9 exists; no backports planned. But registries are a catalog
 network row stores its registry id. `/api/me` tells the client which file and
 atlas to load. Adding a version = 1 JSON file + 1 catalog line, no code changes.
 The old duplicate copy (`server/data/gtnh_registry.json`) was deleted.
+
+## D004 — Abuse protection: blunt per-IP shield, no dependency
+
+**Date:** 2026-08-12 · **Status:** IMPLEMENTED (branch `multiuser-web`)
+
+**Context.** Discussed with Soy: a public multiuser instance needs protection
+against hammering/abuse. Agreed a simple rate limit + container resource caps
+suffice — set-and-forget tool, occasional revisits, users tolerate slowdown.
+
+**Decision.** Hand-rolled fixed-window limiter (same style as existing
+login/sync limiters), not express-rate-limit:
+- `RATE_LIMIT` req/min/IP (default 60) across `/api` + WS connects; `0` off.
+- `BLOCKED_IPS` env blocklist → 403 everywhere; edit var + redeploy to ban.
+- `trust proxy` auto on Railway / `TRUST_PROXY=true` behind reverse proxy —
+  without it every visitor shares the proxy IP bucket and limits misfire.
+- `::ffff:` prefixes stripped so human-written blocklist entries match sockets.
+- compose caps 1.0 CPU / 512M — flood pins container, not host.
+
+**Why not fancier.** No accounts to key on (see [[DECISIONS#D001]] — keys are the
+only identity), traffic profile is tiny (connector 6 req/min), and in-memory
+Maps reset on restart which is acceptable for a shield, not an audit system.

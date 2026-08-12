@@ -22,6 +22,22 @@ One deployed website serves many isolated AE2 networks. See [[PROJECT_CONTEXT]] 
 - **Logout button + login screen** keyed on network key (replaced password login
   and the multi-network dropdown).
 
+## Abuse protection for public hosting (2026-08-12, branch `multiuser-web`)
+
+Agreed with Soy: public instance needs a blunt shield, nothing fancy — tool is
+set-and-forget, users tolerate slowdown. See [[DECISIONS#D004]].
+
+- **Per-IP rate limit** — `RATE_LIMIT` (default 60 req/min) over all `/api`
+  routes and WS connects; fixed window, in-memory, `Retry-After` on 429, `0`
+  disables. Static files exempt (atlas is 24 MB, fetched once).
+- **IP blocklist** — `BLOCKED_IPS` comma-separated, 403 on everything incl.
+  static + WS. For discovered malicious actors; set var, redeploy.
+- **Proxy awareness** — `trust proxy` auto on Railway (`RAILWAY_ENVIRONMENT`),
+  opt-in via `TRUST_PROXY=true` behind Caddy/nginx. Without it all visitors
+  share the proxy's IP bucket. `::ffff:` IPv4-mapped addresses normalized.
+- **Container caps** — compose limits 1.0 CPU / 512 M so a flood pins the
+  container, not the host.
+
 ### Discarded along the way
 
 - Per-user accounts (user1/user2 on same network are indistinguishable — by design).
