@@ -295,6 +295,7 @@ function openItemPicker(onSelect) {
 }
 
 function connectWs() {
+  if (document.hidden) return
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${proto}://${location.host}/ws`)
 
@@ -318,8 +319,12 @@ function connectWs() {
     }
   }
 
-  ws.onclose = () => setTimeout(connectWs, 3000)
+  ws.onclose = () => { if (!document.hidden) setTimeout(connectWs, 3000) }
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) connectWs()
+})
 
 function updateStatusCounts() {
   const el = document.getElementById('status-counts')
