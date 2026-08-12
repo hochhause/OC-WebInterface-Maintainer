@@ -1,11 +1,14 @@
 local component = require("component")
+local computer = require("computer")
 local event = require("event")
 local internet = require("internet")
 local serialization = require("serialization")
 local json = require("json")
+local chunk = require("chunk")
 local cfg = require("config")
 
 local tunnel = component.tunnel
+local rx = chunk.receiver()
 
 local function log(msg)
   print("[" .. os.date("%H:%M:%S") .. "] " .. tostring(msg))
@@ -28,9 +31,9 @@ local function post(path, body)
       ["Content-Type"] = "application/json",
       ["Authorization"] = "Bearer " .. cfg.api_key,
     })
-    local chunks = {}
-    for chunk in response do chunks[#chunks + 1] = chunk end
-    return table.concat(chunks)
+    local parts = {}
+    for part in response do parts[#parts + 1] = part end
+    return table.concat(parts)
   end)
   if not ok then
     log("http error: " .. tostring(result))
@@ -44,20 +47,26 @@ local function post(path, body)
   return decoded
 end
 
+-- The stock reply no longer fits one linked-card packet on a large network, so it
+-- can arrive as several frames. Keep reading until the message is whole.
 local function ask(msg)
   tunnel.send(msg)
-  local _, _, _, _, _, reply = event.pull(cfg.tunnel_timeout, "modem_message")
-  if not reply then return nil end
-  local data = serialization.unserialize(reply)
-  return type(data) == "table" and data or nil
+  local deadline = computer.uptime() + cfg.tunnel_timeout
+  while true do
+    local remaining = deadline - computer.uptime()
+    if remaining <= 0 then return nil end
+    local _, _, _, _, _, reply = event.pull(remaining, "modem_message")
+    if not reply then return nil end
+    local payload = chunk.feed(rx, reply)
+    if payload then
+      local ok, data = pcall(serialization.unserialize, payload)
+      if ok and type(data) == "table" then return data end
+      return nil
+    end
+  end
 end
 
-local function pushTargets(targets)
-  tunnel.send(serialization.serialize({ targets = targets }))
-end
-
-local lastTargetsStr = nil
-local lastSentSleep = nil
+local lastConfigStr = nil
 
 while true do
   local stockData = ask("requeststock")
@@ -76,15 +85,28 @@ while true do
     if result and result.error then
       log("server rejected: " .. tostring(result.error))
     elseif result and result.targets then
-      local targetStr = serialization.serialize(result.targets)
-      if targetStr ~= lastTargetsStr then
-        lastTargetsStr = targetStr
-        pushTargets(result.targets)
-        log("targets updated")
+      -- One payload for everything the maintainer runs on: targets, groups and
+      -- their schedules, the CPU limit, the default interval and the run-now
+      -- counters. Pushed only when it changes; a changed counter is what a
+      -- pressed Run now button looks like from here.
+      local payload = {
+        targets = result.targets,
+        groups = result.groups,
+        cpu_limit = result.cpu_limit,
+        default_run_seq = result.default_run_seq,
+        sleep = result.maintainer_sleep,
+      }
+      local configStr = serialization.serialize(payload)
+      if configStr ~= lastConfigStr then
+        lastConfigStr = configStr
+        chunk.send(tunnel, configStr)
+        log("config pushed")
       end
-      if result.maintainer_sleep and result.maintainer_sleep ~= lastSentSleep then
-        lastSentSleep = result.maintainer_sleep
-        tunnel.send("setsleep:" .. result.maintainer_sleep)
+
+      -- Relay the server's wall clock. It is the only real time source the
+      -- maintainer can reach, and it measures TPS against it.
+      if type(result.now) == "number" then
+        tunnel.send("now:" .. string.format("%.0f", result.now))
       end
     else
       log("sync failed")

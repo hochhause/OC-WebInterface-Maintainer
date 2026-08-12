@@ -2,7 +2,7 @@ local shell = require("shell")
 local filesystem = require("filesystem")
 
 local repo = "https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/level-maintainer/"
-local scripts = {"src/ae2.lua", "maintainer.lua"}
+local scripts = {"src/ae2.lua", "src/chunk.lua", "src/scheduler.lua", "src/state.lua", "maintainer.lua"}
 
 local function cwd(path)
   return shell.getWorkingDirectory() .. "/" .. path

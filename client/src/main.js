@@ -4,6 +4,8 @@ const msg = {
   addFailed: 'Failed to add target: server unreachable.',
   deleteFailed: 'Failed to delete target: server unreachable.',
   saveFailed: 'Failed to save target: server unreachable or invalid value.',
+  groupFailed: 'Failed to save groups: server unreachable.',
+  orderFailed: 'Failed to save order: server unreachable.',
   serverDown: 'Failed to connect to server. Is it running?',
   loginFailed: 'Wrong key. Use the key from your Connector computer\'s config.lua.'
 }
@@ -11,17 +13,27 @@ const msg = {
 let networkId = null
 let network = null
 let targets = []
+let groups = []
 let stock = {}
 let registry = []
 let itemStatus = {}
 const timers = {}
 let sleepTimer = null
+let cpuTimer = null
 let maintainerSleep = 10
+let cpuLimit = 0
 let pendingAdd = null
 let addDefaults = { threshold: null, batch_size: 1, enabled: true }
 let isDirty = false
 let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
 let isDragging = false
+// Run-now is a counter the maintainer picks up on its next poll, so the button
+// stays in a "queued" state until a status arrives that was measured after the click.
+const pendingRun = {}
+
+// Row order is server-side now, so 'default' renders exactly the saved order --
+// 'custom' is the same order plus the drag and bracket gestures.
+const ORDERED_MODES = ['default', 'custom']
 
 function formatShort(n) {
   if (n === null || n === undefined || n === '') return ''
@@ -52,6 +64,13 @@ function parseAmount(str) {
     const result = Function('"use strict"; return (' + s + ')')()
     return Number.isFinite(result) ? Math.round(result) : null
   } catch { return null }
+}
+
+// Group names and the network name are typed by people, and with one key shared
+// between players "people" is not only you. Item labels come from the registry.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+function escapeHtml(text) {
+  return String(text ?? '').replace(/[&<>"']/g, c => HTML_ESCAPES[c])
 }
 
 function iconStyle(x, y) {
@@ -122,10 +141,23 @@ async function fetchTargets() {
   targets = await res.json()
 }
 
+async function fetchGroups() {
+  const res = await fetch('/api/groups')
+  groups = await res.json()
+}
+
 async function fetchStock() {
   const res = await fetch('/api/stock')
   const rows = await res.json()
   stock = Object.fromEntries(rows.map(r => [r.label, r.count]))
+}
+
+// What the maintainer last said about itself: per-item state, TPS, CPU counts and
+// how long ago each schedule ran. Without this a reload shows nothing until the
+// next connector poll lands.
+async function fetchStatus() {
+  const res = await fetch('/api/status')
+  itemStatus = await res.json()
 }
 
 async function fetchRegistry() {
@@ -137,6 +169,7 @@ async function fetchSettings() {
   const res = await fetch('/api/settings')
   const data = await res.json()
   maintainerSleep = data.maintainer_sleep ?? 10
+  cpuLimit = data.cpu_limit ?? 0
 }
 
 function showLogin() {
@@ -318,6 +351,7 @@ function connectWs() {
     if (msg.type === 'stock') {
       Object.assign(stock, msg.stock)
       if (msg.status) itemStatus = msg.status
+      reconcilePendingRuns()
       if (!isDragging) updateStockCells()
       if (isDirty) {
         isDirty = false
@@ -328,6 +362,10 @@ function connectWs() {
       targets = msg.targets
       Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
       if (!isDragging) render()
+    }
+    if (msg.type === 'groups') {
+      groups = msg.groups
+      if (!isDragging) renderTable()
     }
   }
 
@@ -349,21 +387,42 @@ function updateStatusCounts() {
   const disabled = targets.length - enabled.length
   const failed = enabled.filter(t => itemStatus.failed?.[t.label]).length
   const crafting = enabled.filter(t => itemStatus.crafting?.[t.label] && !itemStatus.failed?.[t.label]).length
+  const waiting = enabled.filter(t =>
+    itemStatus.waiting_cpu?.[t.label] && !itemStatus.failed?.[t.label] && !itemStatus.crafting?.[t.label]).length
   const stocked = enabled.filter(t => {
-    if (itemStatus.failed?.[t.label] || itemStatus.crafting?.[t.label]) return false
+    if (itemStatus.failed?.[t.label] || itemStatus.crafting?.[t.label] || itemStatus.waiting_cpu?.[t.label]) return false
     const count = stock[t.label]
     return t.threshold === null || (count !== undefined && count >= t.threshold)
   }).length
   el.innerHTML = `
     <span class="count-stocked">${stocked} stocked</span>
     <span class="count-crafting">${crafting} crafting</span>
+    ${waiting ? `<span class="count-waiting">${waiting} waiting for CPU</span>` : ''}
     <span class="count-failed">${failed} failed</span>
     <span class="count-disabled">${disabled} disabled</span>
   `
 }
 
+// Numbers the maintainer measures in-game: TPS (against the server's real clock)
+// and how many crafting CPUs are busy.
+function updateLiveMeta() {
+  const el = document.getElementById('live-meta')
+  if (!el) return
+  const parts = []
+  if (typeof itemStatus.tps === 'number') {
+    const cls = itemStatus.tps >= 19 ? 'tps-good' : itemStatus.tps >= 15 ? 'tps-slow' : 'tps-bad'
+    parts.push(`<span class="${cls}" title="Server ticks per second, measured in-game">${itemStatus.tps.toFixed(1)} TPS</span>`)
+  }
+  if (itemStatus.cpus && typeof itemStatus.cpus.total === 'number') {
+    parts.push(`<span title="Crafting CPUs busy / total">${itemStatus.cpus.busy ?? 0}/${itemStatus.cpus.total} CPUs</span>`)
+  }
+  el.innerHTML = parts.join(' &middot; ')
+}
+
 function updateStockCells() {
   updateStatusCounts()
+  updateLiveMeta()
+  renderSchedulePanel()
   for (const t of targets) {
     const cell = document.getElementById(`stock-${t.label}`)
     if (cell) {
@@ -411,12 +470,14 @@ function render() {
           </select>
         </div>
         <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
+        <label class="sleep-setting" title="0 = only the free-CPU floor. 3 = never run more than 3 of our own jobs at once. -2 = always leave 2 CPUs free for players.">CPU limit <input id="cpu-input" type="number" value="${cpuLimit}"></label>
       </div>
     </div>
     <div id="main-content">
       <div id="table-container"></div>
     </div>
     <div id="add-container" class="mc-inventory-panel"></div>
+    <div id="schedule-container" class="mc-inventory-panel"></div>
   `
 
   document.getElementById('sleep-input').addEventListener('input', (e) => {
@@ -430,7 +491,25 @@ function render() {
         body: JSON.stringify({ maintainer_sleep: val })
       })
       maintainerSleep = val
+      renderSchedulePanel()
     }, 2000)
+  })
+
+  document.getElementById('cpu-input').addEventListener('input', (e) => {
+    const raw = e.target.value.trim()
+    if (raw === '' || raw === '-') return
+    const val = Math.trunc(Number(raw))
+    if (!Number.isFinite(val) || Math.abs(val) > 1024) return
+    clearTimeout(cpuTimer)
+    cpuTimer = setTimeout(async () => {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cpu_limit: val })
+      })
+      if (res.ok) cpuLimit = val
+      else showToast('Failed to save the CPU limit.', 'error')
+    }, 1000)
   })
 
   const sortSelect = document.getElementById('sort-select')
@@ -460,10 +539,12 @@ function renderNetworkBar() {
   if (!bar || !network) return
 
   bar.innerHTML = `
-    <span class="network-name">${network.name}</span>
+    <span class="network-name">${escapeHtml(network.name)}</span>
     <span class="network-meta">${network.registry.label} &middot; ${formatLastSync(network.last_sync_at)}</span>
+    <span id="live-meta" class="network-live"></span>
     <button id="logout-btn" class="logout-btn">Log out</button>
   `
+  updateLiveMeta()
 
   document.getElementById('logout-btn').onclick = async () => {
     await fetch('/api/logout', { method: 'POST' })
@@ -475,9 +556,11 @@ function renderNetworkBar() {
 
 function rowStatusClass(label, target) {
   const s = itemStatus
-  if (!s.crafting && !s.failed && !s.requested) return ''
+  if (!s.crafting && !s.failed && !s.requested && !s.waiting_cpu) return ''
   if (s.failed?.[label]) return 'status-error'
   if (s.crafting?.[label]) return 'status-crafting'
+  // Deferred to the next cycle for want of a free CPU -- not a failure.
+  if (s.waiting_cpu?.[label]) return 'status-waiting'
   if (s.requested?.[label]) return 'status-ok'
   if (stock[label] !== undefined && target.threshold !== null && stock[label] >= target.threshold) return 'status-ok'
   return ''
@@ -501,33 +584,127 @@ function getSortedTargets() {
       const tb = b.threshold === null ? Infinity : b.threshold
       return tb - ta
     })
-  } else if (currentSort === 'custom') {
-    const savedOrder = JSON.parse(localStorage.getItem(`maintainer_custom_order_${networkId}`) || '[]')
-    if (savedOrder.length > 0) {
-      const activeLabels = new Set(targets.map(t => t.label))
-      const cleanedOrder = savedOrder.filter(label => activeLabels.has(label))
-      const orderMap = new Map(cleanedOrder.map((label, idx) => [label, idx]))
-      list.sort((a, b) => {
-        const idxA = orderMap.has(a.label) ? orderMap.get(a.label) : Infinity
-        const idxB = orderMap.has(b.label) ? orderMap.get(b.label) : Infinity
-        return idxA - idxB
-      })
-    }
   }
+  // 'default' and 'custom' both mean "the order the server holds", which is the
+  // order /api/targets already returns.
   return list
 }
 
+// Groups are rows on the server, membership is a column on the targets. Rebuild
+// the shape the table code has always worked with: labels in row order.
 function loadGroups() {
-  if (!networkId) return []
-  const groups = JSON.parse(localStorage.getItem(`maintainer_groups_${networkId}`) || '[]')
-  const validLabels = new Set(targets.map(t => t.label))
-  return groups
-    .map(g => ({ ...g, labels: g.labels.filter(l => validLabels.has(l)) }))
-    .filter(g => g.labels.length >= 2)
+  const byId = new Map(groups.map(g => [g.id, { ...g, labels: [] }]))
+  for (const t of targets) {
+    const g = byId.get(t.group_id)
+    if (g) g.labels.push(t.label)
+  }
+  return [...byId.values()].filter(g => g.labels.length >= 2)
 }
 
-function saveGroups(groups) {
-  localStorage.setItem(`maintainer_groups_${networkId}`, JSON.stringify(groups))
+function findGroup(id) {
+  return loadGroups().find(g => g.id === id) ?? null
+}
+
+/**
+ * Pushes a whole group layout. Membership rides on the targets, so the local
+ * copies of both are patched first and the table redrawn immediately -- the
+ * refetch afterwards is what reconciles with whatever the server actually kept
+ * (it drops groups that ended up with fewer than two members).
+ */
+async function saveGroups(next) {
+  const labelToId = new Map()
+  for (const g of next) for (const label of g.labels) labelToId.set(label, g.id)
+
+  const known = new Set(groups.map(g => g.id))
+  groups = next.map(g => ({
+    id: g.id,
+    name: g.name,
+    collapsed: g.collapsed ? 1 : 0,
+    interval_s: g.interval_s ?? null,
+    min_tps: g.min_tps ?? null,
+    run_seq: g.run_seq ?? 0
+  }))
+  targets = targets.map(t => ({ ...t, group_id: labelToId.get(t.label) ?? null }))
+  renderTable()
+
+  try {
+    const res = await fetch('/api/groups', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // Schedule fields go only with groups the server has never seen. Leaving
+        // them off an existing group makes the server keep what it has, so
+        // redrawing brackets from a page that loaded before somebody set an
+        // interval cannot wipe that interval.
+        groups: next.map(g => known.has(g.id)
+          ? { id: g.id, name: g.name, collapsed: !!g.collapsed, labels: g.labels }
+          : {
+              id: g.id,
+              name: g.name,
+              collapsed: !!g.collapsed,
+              interval_s: g.interval_s ?? null,
+              min_tps: g.min_tps ?? null,
+              labels: g.labels
+            })
+      })
+    })
+    if (!res.ok) throw new Error()
+    isDirty = true
+  } catch {
+    showToast(msg.groupFailed, 'error')
+  }
+
+  await Promise.all([fetchTargets(), fetchGroups()])
+  renderTable()
+}
+
+async function patchGroup(id, patch) {
+  const local = groups.find(g => g.id === id)
+  if (local) Object.assign(local, patch)
+  try {
+    const res = await fetch(`/api/groups/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    })
+    if (!res.ok) throw new Error()
+    isDirty = true
+  } catch {
+    showToast(msg.groupFailed, 'error')
+    await fetchGroups()
+    renderTable()
+  }
+}
+
+async function removeGroup(id) {
+  groups = groups.filter(g => g.id !== id)
+  targets = targets.map(t => (t.group_id === id ? { ...t, group_id: null } : t))
+  renderTable()
+  try {
+    const res = await fetch(`/api/groups/${id}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error()
+    isDirty = true
+  } catch {
+    showToast(msg.groupFailed, 'error')
+  }
+  await Promise.all([fetchTargets(), fetchGroups()])
+  renderTable()
+}
+
+// Bumps a counter; the maintainer notices it on its next poll (<= poll interval,
+// 10s by default) and moves that schedule's next run to right now.
+async function runNow(groupId) {
+  const key = groupId === null ? 'default' : String(groupId)
+  pendingRun[key] = Date.now()
+  renderSchedulePanel()
+  try {
+    const res = await fetch(groupId === null ? '/api/run-now' : `/api/run-now/${groupId}`, { method: 'POST' })
+    if (!res.ok) throw new Error()
+  } catch {
+    delete pendingRun[key]
+    showToast('Failed to queue the run: server unreachable.', 'error')
+    renderSchedulePanel()
+  }
 }
 
 function buildRowPlan(sortedTargets, groups) {
@@ -558,6 +735,20 @@ function buildRowPlan(sortedTargets, groups) {
   return plan
 }
 
+// How stale a collapsed group's stock counts are. A 30-minute group legitimately
+// shows half-hour-old numbers, which looks like a bug without this.
+function formatAge(secs) {
+  if (secs === null || secs === undefined) return ''
+  if (secs < 60) return `${Math.max(0, Math.round(secs))}s ago`
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`
+  return `${Math.round(secs / 3600)}h ago`
+}
+
+function groupAge(key) {
+  const ago = itemStatus.group_checked?.[String(key)]
+  return typeof ago === 'number' ? ago : null
+}
+
 function renderCollapsedGroupRow(group, grabDisabled) {
   const icons = group.labels.slice(0, 5).map(label => {
     const reg = registry.find(r => r.label === label)
@@ -566,6 +757,11 @@ function renderCollapsedGroupRow(group, grabDisabled) {
   const extra = group.labels.length > 5 ? `<span class="group-extra-count">+${group.labels.length - 5}</span>` : ''
   const groupTargets = targets.filter(t => group.labels.includes(t.label))
   const allEnabled = groupTargets.length > 0 && groupTargets.every(t => t.enabled !== 0)
+  const schedule = group.interval_s
+    ? `every ${group.interval_s}s`
+    : 'default schedule'
+  const age = groupAge(group.interval_s ? group.id : 0)
+  const badge = `<span class="group-schedule-badge">${schedule}${age === null ? '' : ` &middot; checked ${formatAge(age)}`}</span>`
   return `
     <tr class="group-collapsed-row" data-group-id="${group.id}">
       <td class="bracket-cell bracket-collapse-zone" data-group-id="${group.id}"></td>
@@ -582,8 +778,8 @@ function renderCollapsedGroupRow(group, grabDisabled) {
         </button>
       </td>
       <td><div class="group-icons">${icons}${extra}</div></td>
-      <td></td>
-      <td colspan="2"><input type="text" class="group-name-input" data-group-id="${group.id}" value="${group.name}"></td>
+      <td>${badge}</td>
+      <td colspan="2"><input type="text" class="group-name-input" data-group-id="${group.id}" value="${escapeHtml(group.name)}"></td>
       <td><button class="expand-btn" data-group-id="${group.id}">Expand</button></td>
     </tr>
   `
@@ -632,17 +828,15 @@ function setupBracketDrag(container) {
       if (!row || !row.dataset.row) return
       const isGrouped = ['group-first', 'group-middle', 'group-last'].some(c => row.classList.contains(c))
       if (!isGrouped) return
-      const groups = loadGroups()
-      const g = groups.find(g => g.labels.includes(row.dataset.row))
+      const g = loadGroups().find(gr => gr.labels.includes(row.dataset.row))
       if (!g) return
-      g.collapsed = true
-      saveGroups(groups)
+      patchGroup(g.id, { collapsed: true })
       renderTable()
       return
     }
 
     const rows = getRows()
-    const groups = loadGroups()
+    const list = loadGroups()
     const newLabels = []
     const overlapping = []
     const seenOverlap = new Set()
@@ -652,10 +846,10 @@ function setupBracketDrag(container) {
       if (!row) continue
       if (row.dataset.row) {
         newLabels.push(row.dataset.row)
-        const g = groups.find(gr => gr.labels.includes(row.dataset.row))
+        const g = list.find(gr => gr.labels.includes(row.dataset.row))
         if (g && !seenOverlap.has(g.id)) { seenOverlap.add(g.id); overlapping.push(g) }
       } else if (row.dataset.groupId) {
-        const g = groups.find(gr => gr.id === parseInt(row.dataset.groupId))
+        const g = list.find(gr => gr.id === parseInt(row.dataset.groupId))
         if (g) {
           newLabels.push(...g.labels)
           if (!seenOverlap.has(g.id)) { seenOverlap.add(g.id); overlapping.push(g) }
@@ -667,28 +861,37 @@ function setupBracketDrag(container) {
 
     const newLabelSet = new Set(newLabels)
 
-    const kept = groups
+    const kept = list
       .map(g => ({ ...g, labels: g.labels.filter(l => !newLabelSet.has(l)) }))
       .filter(g => g.labels.length >= 2)
 
-    const id = kept.length === 0 ? 1 : Math.max(...kept.map(g => g.id)) + 1
-    const name = overlapping.length > 0 ? overlapping[0].name : 'Group ' + id
-    kept.push({ id, name, labels: newLabels, collapsed: false })
+    // Ids must not collide with a group that is only losing members here, so
+    // count the whole layout rather than just the survivors.
+    const takenIds = list.map(g => g.id)
+    const id = takenIds.length === 0 ? 1 : Math.max(...takenIds) + 1
+    // Swallowing an existing group inherits its name and its schedule.
+    const absorbed = overlapping[0]
+    kept.push({
+      id,
+      name: absorbed ? absorbed.name : 'Group ' + id,
+      labels: newLabels,
+      collapsed: false,
+      interval_s: absorbed?.interval_s ?? null,
+      min_tps: absorbed?.min_tps ?? null
+    })
     saveGroups(kept)
-    renderTable()
   }
 
   container.querySelectorAll('td.bracket-cell').forEach(cell => {
+    // Collapsing and expanding is navigation, so it works in any ordered mode --
+    // only the gestures that *change* a group need Custom.
     cell.addEventListener('click', (e) => {
-      if (currentSort !== 'custom') return
+      if (!ORDERED_MODES.includes(currentSort)) return
       if (!cell.classList.contains('bracket-collapse-zone')) return
       const row = cell.closest('tr')
-      const groupId = parseInt(row.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
+      const g = findGroup(parseInt(row.dataset.groupId))
       if (!g) return
-      g.collapsed = false
-      saveGroups(groups)
+      patchGroup(g.id, { collapsed: false })
       renderTable()
     })
 
@@ -737,17 +940,14 @@ function setupBracketDrag(container) {
       if (currentSort !== 'custom') return
       e.preventDefault()
       const row = cell.closest('tr')
-      const groups = loadGroups()
       let groupId = null
       if (row.dataset.groupId) {
         groupId = parseInt(row.dataset.groupId)
       } else if (row.dataset.row) {
-        const g = groups.find(g => g.labels.includes(row.dataset.row))
-        if (g) groupId = g.id
+        groupId = loadGroups().find(g => g.labels.includes(row.dataset.row))?.id ?? null
       }
       if (groupId === null) return
-      saveGroups(groups.filter(g => g.id !== groupId))
-      renderTable()
+      removeGroup(groupId)
     })
   })
 }
@@ -757,12 +957,12 @@ function renderTable() {
 
   updateStatusCounts()
 
-  const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
-  const grabDisabled = currentSort !== 'custom' && hasCustomOrder
+  const grabDisabled = !ORDERED_MODES.includes(currentSort)
 
   const sortedTargets = getSortedTargets()
-  const groups = currentSort === 'custom' ? loadGroups() : []
-  const plan = buildRowPlan(sortedTargets, groups)
+  // Brackets need the saved row order to draw contiguous groups, which both
+  // ordered modes have. Alphabetical/threshold views scatter the members.
+  const plan = buildRowPlan(sortedTargets, grabDisabled ? [] : loadGroups())
 
   const rows = plan.map(entry => {
     if (entry.type === 'group-collapsed') return renderCollapsedGroupRow(entry.group, grabDisabled)
@@ -909,9 +1109,7 @@ function renderTable() {
 
   container.querySelectorAll('.group-toggle-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const groupId = parseInt(btn.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
+      const g = findGroup(parseInt(btn.dataset.groupId))
       if (!g) return
       const groupTargets = targets.filter(t => g.labels.includes(t.label))
       const allEnabled = groupTargets.every(t => t.enabled !== 0)
@@ -925,12 +1123,9 @@ function renderTable() {
 
   container.querySelectorAll('.expand-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const groupId = parseInt(btn.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
+      const g = findGroup(parseInt(btn.dataset.groupId))
       if (!g) return
-      g.collapsed = false
-      saveGroups(groups)
+      patchGroup(g.id, { collapsed: false })
       renderTable()
     })
   })
@@ -940,12 +1135,9 @@ function renderTable() {
     input.addEventListener('focus', () => { savedName = input.value })
     input.addEventListener('blur', () => {
       const groupId = parseInt(input.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
-      if (!g) return
-      g.name = input.value.trim() || savedName
-      input.value = g.name
-      saveGroups(groups)
+      const name = input.value.trim() || savedName
+      input.value = name
+      if (name !== savedName) patchGroup(groupId, { name }).then(renderSchedulePanel)
     })
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') input.blur()
@@ -954,6 +1146,7 @@ function renderTable() {
   })
 
   renderAddPanel()
+  renderSchedulePanel()
   setupBracketDrag(container)
 
   let draggedRow = null
@@ -977,8 +1170,7 @@ function renderTable() {
     row.setAttribute('draggable', 'true')
 
     row.addEventListener('dragstart', (e) => {
-      const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
-      if (currentSort !== 'custom' && hasCustomOrder) {
+      if (!ORDERED_MODES.includes(currentSort)) {
         e.preventDefault()
         showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
         return
@@ -996,24 +1188,22 @@ function renderTable() {
     const handle = row.querySelector('.grab-handle')
     if (handle) {
       handle.addEventListener('click', () => {
-        const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
-        if (currentSort !== 'custom' && hasCustomOrder) {
+        if (!ORDERED_MODES.includes(currentSort)) {
           showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
         }
       })
     }
 
-    row.addEventListener('dragend', () => {
-      if (draggedRow) {
-        draggedRow.classList.remove('dragging')
-        const label = draggedRow.dataset.row
-        draggedRow = null
-        isDragging = false
-        saveCustomOrder()
-        autoJoinGroup(label)
-      } else {
-        isDragging = false
-      }
+    // Order first, then membership: autoJoinGroup refetches the targets, and a
+    // refetch that overtakes the order write would snap the row back.
+    row.addEventListener('dragend', async () => {
+      if (!draggedRow) { isDragging = false; return }
+      draggedRow.classList.remove('dragging')
+      const label = draggedRow.dataset.row
+      draggedRow = null
+      isDragging = false
+      await saveCustomOrder()
+      autoJoinGroup(label)
     })
 
     row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
@@ -1026,7 +1216,7 @@ function renderTable() {
     })
     row.setAttribute('draggable', 'true')
     row.addEventListener('dragstart', (e) => {
-      if (currentSort !== 'custom') { e.preventDefault(); return }
+      if (!ORDERED_MODES.includes(currentSort)) { e.preventDefault(); return }
       if (!dragAllowed) { e.preventDefault(); return }
       draggedRow = row
       isDragging = true
@@ -1141,6 +1331,101 @@ function renderAddPanel() {
   }
 }
 
+/**
+ * One row per schedule the maintainer runs: the default one (ungrouped items plus
+ * every group without its own interval) and each group that set an interval.
+ * Lives outside the table because a group's schedule matters in every sort mode,
+ * while its bracket only draws in the ordered ones.
+ */
+function renderSchedulePanel() {
+  const container = document.getElementById('schedule-container')
+  if (!container) return
+  // Never redraw under the user's cursor while they are typing an interval. Only
+  // fields count: a clicked button holds focus too, and its own click needs the
+  // redraw to show "queued...".
+  const active = document.activeElement
+  if (active && active.tagName === 'INPUT' && container.contains(active)) return
+
+  const list = loadGroups()
+  const scheduled = list.filter(g => g.interval_s)
+  const defaultAge = groupAge(0)
+
+  const rowsHtml = [`
+    <div class="schedule-row">
+      <span class="schedule-name">Default schedule</span>
+      <span class="schedule-detail">every ${maintainerSleep}s &middot; ungrouped items${
+        list.length > scheduled.length ? ' and groups without an interval' : ''}</span>
+      <span class="schedule-age">${defaultAge === null ? '' : 'checked ' + formatAge(defaultAge)}</span>
+      <button class="run-now-btn" data-run="default" ${pendingRun.default ? 'disabled' : ''}>
+        ${pendingRun.default ? 'queued...' : 'Run now'}
+      </button>
+    </div>
+  `]
+
+  for (const g of list) {
+    const own = !!g.interval_s
+    const age = groupAge(own ? g.id : 0)
+    const gated = g.min_tps !== null && g.min_tps !== undefined
+      && typeof itemStatus.tps === 'number' && itemStatus.tps < g.min_tps
+    const pending = !!pendingRun[String(g.id)]
+    rowsHtml.push(`
+      <div class="schedule-row">
+        <span class="schedule-name">${escapeHtml(g.name)}</span>
+        <label class="schedule-field">every
+          <input type="number" min="5" max="86400" class="schedule-interval" data-group-id="${g.id}"
+            value="${g.interval_s ?? ''}" placeholder="${maintainerSleep}"> s</label>
+        <label class="schedule-field" title="The group's timer only fires while the measured server TPS is at least this high.">min TPS
+          <input type="number" min="0" max="20" step="0.5" class="schedule-tps" data-group-id="${g.id}"
+            value="${g.min_tps ?? ''}" placeholder="off"></label>
+        <span class="schedule-age">${gated
+          ? '<span class="schedule-gated">TPS gate closed</span>'
+          : (age === null ? '' : 'checked ' + formatAge(age))}</span>
+        ${own
+          ? `<button class="run-now-btn" data-run="${g.id}" ${pending ? 'disabled' : ''}>${pending ? 'queued...' : 'Run now'}</button>`
+          : '<span class="schedule-detail">on the default schedule</span>'}
+      </div>
+    `)
+  }
+
+  container.innerHTML = `
+    <div class="inventory-title">Schedules</div>
+    ${rowsHtml.join('')}
+    ${list.length === 0 ? '<div class="schedule-hint">Group rows together in Custom sorting to give them their own interval.</div>' : ''}
+  `
+
+  container.querySelectorAll('.run-now-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.run
+      runNow(key === 'default' ? null : parseInt(key))
+    })
+  })
+
+  const commitField = (input, field, min, max) => {
+    const groupId = parseInt(input.dataset.groupId)
+    const raw = input.value.trim()
+    if (raw === '') {
+      patchGroup(groupId, { [field]: null }).then(renderTable)
+      return
+    }
+    const val = Number(raw)
+    if (!Number.isFinite(val) || val < min || val > max) {
+      showToast(`Enter ${min}-${max}, or leave it empty.`, 'error')
+      renderSchedulePanel()
+      return
+    }
+    // renderTable so a collapsed group's "every 600s" badge follows along; the
+    // panel itself skips the redraw while the cursor is still in it.
+    patchGroup(groupId, { [field]: field === 'interval_s' ? Math.floor(val) : val }).then(renderTable)
+  }
+
+  container.querySelectorAll('.schedule-interval').forEach(input => {
+    input.addEventListener('change', () => commitField(input, 'interval_s', 5, 86400))
+  })
+  container.querySelectorAll('.schedule-tps').forEach(input => {
+    input.addEventListener('change', () => commitField(input, 'min_tps', 0, 20))
+  })
+}
+
 function autoJoinGroup(label) {
   if (currentSort !== 'custom') return
   const tbody = document.querySelector('table tbody')
@@ -1148,36 +1433,37 @@ function autoJoinGroup(label) {
   const row = tbody.querySelector(`tr[data-row="${CSS.escape(label)}"]`)
   if (!row) return
 
-  let groups = loadGroups()
+  let list = loadGroups()
 
   // Remove from current group if it's in one
-  const currentGroup = groups.find(g => g.labels.includes(label))
+  const currentGroup = list.find(g => g.labels.includes(label))
   if (currentGroup) {
-    groups = groups
+    list = list
       .map(g => g.id === currentGroup.id ? { ...g, labels: g.labels.filter(l => l !== label) } : g)
       .filter(g => g.labels.length >= 2)
-    saveGroups(groups)
   }
 
   // Only auto-join if both immediate neighbors are regular item rows in the same group
   const prev = row.previousElementSibling
   const next = row.nextElementSibling
-  if (!prev?.dataset?.row || !next?.dataset?.row) { renderTable(); return }
-
   const labelToGroup = new Map()
-  for (const g of groups) for (const l of g.labels) labelToGroup.set(l, g)
+  for (const g of list) for (const l of g.labels) labelToGroup.set(l, g)
+  const prevGroup = prev?.dataset?.row ? labelToGroup.get(prev.dataset.row) : null
+  const nextGroup = next?.dataset?.row ? labelToGroup.get(next.dataset.row) : null
 
-  const prevGroup = labelToGroup.get(prev.dataset.row)
-  const nextGroup = labelToGroup.get(next.dataset.row)
-  if (!prevGroup || !nextGroup || prevGroup.id !== nextGroup.id) { renderTable(); return }
-
-  groups = groups.map(g => g.id === prevGroup.id ? { ...g, labels: [...g.labels, label] } : g)
-  saveGroups(groups)
-  renderTable()
+  if (prevGroup && nextGroup && prevGroup.id === nextGroup.id) {
+    list = list.map(g => g.id === prevGroup.id ? { ...g, labels: [...g.labels, label] } : g)
+  } else if (!currentGroup) {
+    renderTable()
+    return
+  }
+  saveGroups(list)
 }
 
-function saveCustomOrder() {
-  const groups = loadGroups()
+// Row order is shared state now, so a drag writes it to the server. The DOM is
+// the truth here: it holds the order the user just dropped rows into.
+async function saveCustomOrder() {
+  const list = loadGroups()
   const seenGroupIds = new Set()
   const rowLabels = []
   for (const row of document.querySelectorAll('table tbody tr')) {
@@ -1187,36 +1473,38 @@ function saveCustomOrder() {
       const gid = parseInt(row.dataset.groupId)
       if (seenGroupIds.has(gid)) continue
       seenGroupIds.add(gid)
-      const g = groups.find(g => g.id === gid)
+      const g = list.find(g => g.id === gid)
       if (g) rowLabels.push(...g.labels)
     }
   }
+  if (!rowLabels.length) return
+
+  // 'default' shows the same saved order, so switching costs the user nothing
+  // visually -- it just turns the drag and bracket gestures on.
   if (currentSort !== 'custom') {
-    const oldCustomOrder = localStorage.getItem(`maintainer_custom_order_${networkId}`)
-    const oldSortMode = currentSort
     currentSort = 'custom'
     localStorage.setItem('maintainer_sort_mode', 'custom')
     const select = document.getElementById('sort-select')
     if (select) select.value = 'custom'
-    
-    showToast('Switched to Custom sorting.', 'success', {
-      text: 'Undo',
-      callback: () => {
-        currentSort = oldSortMode
-        localStorage.setItem('maintainer_sort_mode', oldSortMode)
-        if (oldCustomOrder) {
-          localStorage.setItem(`maintainer_custom_order_${networkId}`, oldCustomOrder)
-        } else {
-          localStorage.removeItem(`maintainer_custom_order_${networkId}`)
-        }
-        const select2 = document.getElementById('sort-select')
-        if (select2) select2.value = oldSortMode
-        renderTable()
-        showToast('Reverted sort changes.', 'success')
-      }
-    })
+    showToast('Switched to Custom sorting.', 'success')
   }
-  localStorage.setItem(`maintainer_custom_order_${networkId}`, JSON.stringify(rowLabels))
+
+  const rank = new Map(rowLabels.map((label, i) => [label, i]))
+  targets = [...targets].sort((a, b) => (rank.get(a.label) ?? Infinity) - (rank.get(b.label) ?? Infinity))
+
+  try {
+    const res = await fetch('/api/order', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ labels: rowLabels })
+    })
+    if (!res.ok) throw new Error()
+    isDirty = true
+  } catch {
+    showToast(msg.orderFailed, 'error')
+    await fetchTargets()
+    renderTable()
+  }
 }
 
 function getRowData(label) {
@@ -1237,13 +1525,80 @@ function getRowData(label) {
   }
 }
 
+// A queued run clears once the maintainer reports a check that happened after the
+// click. 90s is the escape hatch for a maintainer that never answers.
+function reconcilePendingRuns() {
+  for (const [key, clickedAt] of Object.entries(pendingRun)) {
+    const sinceClick = (Date.now() - clickedAt) / 1000
+    const group = key === 'default' ? null : groups.find(g => g.id === Number(key))
+    const age = groupAge(group?.interval_s ? group.id : 0)
+    if (sinceClick > 90 || (age !== null && age < sinceClick)) delete pendingRun[key]
+  }
+}
+
+/**
+ * Groups and row order used to live in this browser's localStorage, which meant
+ * the maintainer could not see them and two browsers disagreed. Hand whatever
+ * this browser still holds to the server once, then forget it locally.
+ */
+async function migrateLocalLayout() {
+  const groupKey = `maintainer_groups_${networkId}`
+  const orderKey = `maintainer_custom_order_${networkId}`
+  const rawGroups = localStorage.getItem(groupKey)
+  const rawOrder = localStorage.getItem(orderKey)
+  if (!rawGroups && !rawOrder) return
+
+  const known = new Set(targets.map(t => t.label))
+  try {
+    // Order first: groups are stored as label lists, but they are drawn from row
+    // order, so the positions have to be in place before the brackets are.
+    if (rawOrder && targets.every(t => !t.position)) {
+      const labels = JSON.parse(rawOrder).filter(l => known.has(l))
+      if (labels.length) {
+        const res = await fetch('/api/order', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ labels })
+        })
+        if (!res.ok) throw new Error()
+      }
+    }
+    if (rawGroups && groups.length === 0) {
+      const local = JSON.parse(rawGroups)
+        .map(g => ({
+          id: g.id,
+          name: g.name,
+          collapsed: !!g.collapsed,
+          labels: (g.labels ?? []).filter(l => known.has(l))
+        }))
+        .filter(g => Number.isInteger(g.id) && g.id > 0 && g.labels.length >= 2)
+      if (local.length) {
+        const res = await fetch('/api/groups', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groups: local })
+        })
+        if (!res.ok) throw new Error()
+      }
+    }
+    localStorage.removeItem(groupKey)
+    localStorage.removeItem(orderKey)
+    await Promise.all([fetchTargets(), fetchGroups()])
+    showToast('Groups and row order now live on the server.', 'success')
+  } catch {
+    // Keep the local copy and try again next load rather than losing the layout.
+    showToast('Could not upload this browser\'s groups yet, will retry.', 'error')
+  }
+}
+
 async function init() {
   try {
     network = await fetchMe()
     if (network === null) { showLogin(); return }
     networkId = network.id
     await fetchRegistry()
-    await Promise.all([fetchTargets(), fetchStock(), fetchSettings()])
+    await Promise.all([fetchTargets(), fetchGroups(), fetchStock(), fetchStatus(), fetchSettings()])
+    await migrateLocalLayout()
     render()
     connectWs()
   } catch {

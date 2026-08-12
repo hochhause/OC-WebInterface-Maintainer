@@ -12,6 +12,29 @@ Add and change items to stock on your AE2 network, see currrent stocked item cou
 # Disclaimer
 Your network key is the only thing protecting your AE2 network. Anyone who has it can change your maintained values. Don't paste it in a public Discord. I'm not responsible if you do.
 
+---
+
+## What it does
+
+Set a target stock level for any craftable item or fluid, and an OC computer keeps
+your AE2 network topped up to it. The website is where you set those targets and
+watch what's happening.
+
+- **Stock targets** — threshold + batch size per item, live counts, per-row status
+  (stocked / crafting / failed / waiting), enable-disable without deleting.
+- **Groups** — bracket rows together NEI-calculator style, collapse them, rename
+  them, toggle a whole group at once.
+- **Schedules** — a group can be checked on its own interval instead of every
+  cycle. Ores every 10 minutes, hot stuff every 10 seconds.
+- **CPU limit** — cap how many crafting CPUs the maintainer is allowed to occupy,
+  or reserve some for the players.
+- **Run now** — force a schedule to check immediately.
+- **TPS gate** — hold a group back while the server is running slow, and see the
+  measured TPS in the header.
+- **One site, many networks** — every AE2 network is isolated behind its own key.
+- **Keeps running without the website** — the maintainer remembers its config and
+  carries on through outages, or with no web server at all.
+
 ## How it works
 
 Two OC computers run ingame  
@@ -19,6 +42,11 @@ Web app runs on either local or on a server
   
 One manages your AE2 system  
 One connects it to the web server  
+
+The **Maintainer** does all the AE2 work and holds the schedule. The **Connector**
+just shuttles data between it and the website over a linked card. Nothing about
+your crafting depends on the website staying up — the Maintainer keeps its own
+copy of the config and runs from that.
 
 ### One website, many players
 
@@ -65,6 +93,12 @@ and prints it**. Write it down — that's your website login. Running the instal
 again keeps the same config and just prints the key back at you.
 
 then run `Connector` to run the program
+
+> **Updating from an older version: run both installers.** The two computers talk
+> in a slightly different way now — big messages get split into pieces — and only
+> the new scripts on both sides handle the largest target lists. The Maintainer
+> installer now also pulls `src/chunk.lua`, `src/scheduler.lua` and `src/state.lua`
+> alongside the scripts it always did.
 
 ---
 
@@ -154,8 +188,8 @@ All optional, set in `server/.env` or your host's variables tab.
 
 ### Open Computer Configs
 
-`install-connector` writes this for you. You only need to touch it to change the
-server URL or the display name.
+**Connector.** `install-connector` writes this for you. You only need to touch it
+to change the server URL or the display name.
 
 ```lua
 return {
@@ -171,12 +205,153 @@ Lost your key? Run `install-connector` on the Connector computer again, or
 To move a network to a different key, change `api_key` and restart the Connector —
 it registers as a *new, empty* network. The old one keeps its data under the old key.
 
+**Maintainer.** Its `config.lua` only matters until the website pushes a config for
+the first time; after that the Maintainer runs from `/home/maintainer-state.lua`.
+For a Maintainer with no Connector, this file is where you set everything:
+
+```lua
+return {
+  sleep = 10,       -- default schedule, in game seconds
+  cpu_limit = 0,    -- 0 off, 3 = max 3 own jobs, -2 = leave 2 CPUs for players
+  debug = true,     -- shows query time and ME call count on the screen
+
+  items = {
+    ["Iron Plate"] = {nil, 16},                    -- {threshold, batch}
+    ["Certus Quartz Dust"] = {10000, 64, nil, 1},  -- ...fluid tag, group id
+  },
+  fluids = {
+    -- ["Steam"] = {1000000, 100000},
+  },
+  groups = {
+    [1] = { name = "Ores", interval_s = 600, min_tps = 18 },
+  },
+}
+```
+
+A `nil` threshold means "always craft" — the maintainer requests a batch every
+time that item isn't already being crafted.
+
 ---
 
-Actually using the site below here : WIP  
-  
-  In sorting -> Custom, you can drag LEFT in the blank area left of the handle to create bracket groups similar to NEI Calculator (literally click drag in those areas like you would with NEI calculator groupping)
-    
-  Bracket groups can be clicked to collapse then moved around and renamed. (Enable/Disable on collapse group disables/enables all things in the group)
+## Using the site
 
-  The UX for this isn't that good, so likely this will be reworked.
+### The table
+
+One row per maintained item. Click the item slot to swap it for another,
+`Threshold` is the level to keep it at, `Batch size` is how much to request at a
+time. Both accept shorthand and arithmetic: `64k`, `1.5m`, `20*64`.
+
+Row colour tells you where each item stands:
+
+| Colour | Meaning |
+|---|---|
+| Green | Stocked, or a craft was just requested |
+| Blue | Currently crafting |
+| Amber | Wanted crafting, but no free CPU — retried next cycle |
+| Red | The request failed (not craftable, missing pattern, no ingredients…) |
+| Grey | Disabled |
+
+The counts above the table summarise the same thing, and the header shows the
+measured server TPS and how many crafting CPUs are busy.
+
+### Groups
+
+In sorting -> Custom, you can drag LEFT in the blank area left of the handle to
+create bracket groups similar to NEI Calculator (literally click drag in those
+areas like you would with NEI calculator groupping)
+
+Bracket groups can be clicked to collapse then moved around and renamed.
+(Enable/Disable on collapse group disables/enables all things in the group)
+Right-click the bracket area to ungroup.
+
+The UX for this isn't that good, so likely this will be reworked.
+
+Groups and your row order are saved **on the server**, not in your browser, so the
+Maintainer can act on them and everyone using your key sees the same layout. If you
+had groups from an older version, they get uploaded automatically the first time
+you open the site.
+
+### Schedules
+
+Below the table there's a row per schedule.
+
+- **Default schedule** — everything that isn't in a group with its own interval.
+  Its interval is the "Check every N s" box in the toolbar.
+- **A group with an interval** — checked every N seconds instead. Good for slow
+  bulk things: set a group of ores to 600s and the Maintainer stops asking your ME
+  system about them every 10 seconds.
+- **min TPS** — optional. That group is skipped while the server runs slower than
+  the number you set. Leave it empty for off.
+- **Run now** — checks that schedule immediately. Takes up to one Connector poll
+  (~10s), so the button says "queued..." until the Maintainer confirms.
+
+Seconds are *game* seconds. If the server is lagging at 10 TPS, a "600s" group is
+checked every 20 real minutes — the same way your machines are running at half
+speed. Nothing bursts or shifts after a server freeze either.
+
+A collapsed group shows how long ago it was last checked. A 30-minute group
+legitimately shows half-hour-old stock counts; that's what the label is for.
+
+### CPU limit
+
+Next to the check interval.
+
+| Value | Meaning |
+|---|---|
+| `0` | No limit, but never submit a job when zero crafting CPUs are free |
+| `3` | Never run more than 3 jobs of our own at once |
+| `-2` | Always leave 2 CPUs free for players |
+
+Items that wanted crafting but couldn't get a CPU show up amber as "waiting for
+CPU" and are retried next cycle, instead of the wall of "failed to request" the
+old version produced when the CPUs were all busy.
+
+The limit is a courtesy, not a lock: it counts the jobs *this maintainer* started,
+so a player submitting a craft by hand mid-cycle can still fill the last CPU.
+
+---
+
+## Running without the website
+
+Every config the Maintainer accepts is written to `/home/maintainer-state.lua` and
+loaded on boot, so a web outage — or no web server at all — doesn't stop your
+crafting. It keeps running its full schedule from that file.
+
+That makes **Maintainer-only** a supported setup: install just the Maintainer, skip
+the Connector, and edit the config by hand. It's plain Lua:
+
+```
+edit /home/maintainer-state.lua
+```
+
+Delete that file to go back to `config.lua`. The Maintainer prints which of the two
+it loaded when it starts.
+
+TPS is the one thing that needs the website: an OC computer has no real-world
+clock, so the server sends its own with each poll. Without a Connector the
+Maintainer falls back to a local trick, and if that doesn't work on your setup the
+header just shows no TPS and every `min TPS` gate stays open — a gate never stops
+crafting on a number it isn't sure about.
+
+---
+
+## Troubleshooting
+
+**Stock counts look old.** Check whether that item is in a group with a long
+interval — collapsed group rows show "checked 23m ago". Hit Run now to force it.
+
+**Everything is amber "waiting for CPU".** All your crafting CPUs are busy, or your
+CPU limit is lower than the number of items that want crafting right now. Raise the
+limit, or add CPUs.
+
+**Rows are red saying "not craftable".** The Maintainer resolves items by label
+against the patterns in your ME network. If there's no pattern, or the label
+differs, it can't request it.
+
+**The website shows nothing / "never synced".** The Connector isn't reaching the
+server. Check the URL in its `config.lua`, that it has an Internet Card, and the
+`filteringRules` note above for local hosting.
+
+**"no response from maintainer" on the Connector.** The linked cards aren't a pair,
+or the Maintainer program isn't running. Both computers need halves of the *same*
+crafted pair.
