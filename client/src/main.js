@@ -5,13 +5,13 @@ const msg = {
   deleteFailed: 'Failed to delete target: server unreachable.',
   saveFailed: 'Failed to save target: server unreachable or invalid value.',
   serverDown: 'Failed to connect to server. Is it running?',
-  loginFailed: 'Wrong password.'
+  loginFailed: 'Wrong key. Use the key from your Connector computer\'s config.lua.'
 }
 
 let networkId = null
+let network = null
 let targets = []
 let stock = {}
-let networks = []
 let registry = []
 let itemStatus = {}
 const timers = {}
@@ -109,61 +109,73 @@ function showToast(message, type = 'success', action = null) {
   }, 5000)
 }
 
-async function fetchNetworks() {
-  const res = await fetch('/api/networks')
+// The server derives our network from the session cookie, so no id is ever
+// sent in a URL -- /api/me is how we learn which one we are looking at.
+async function fetchMe() {
+  const res = await fetch('/api/me')
   if (res.status === 401) return null
   return res.json()
 }
 
 async function fetchTargets() {
-  const res = await fetch(`/api/targets/${networkId}`)
+  const res = await fetch('/api/targets')
   targets = await res.json()
 }
 
 async function fetchStock() {
-  const res = await fetch(`/api/stock/${networkId}`)
+  const res = await fetch('/api/stock')
   const rows = await res.json()
   stock = Object.fromEntries(rows.map(r => [r.label, r.count]))
 }
 
 async function fetchRegistry() {
-  const res = await fetch('/gtnh_registry.json')
+  const res = await fetch(network.registry.url)
   registry = await res.json()
 }
 
 async function fetchSettings() {
-  const res = await fetch(`/api/settings/${networkId}`)
+  const res = await fetch('/api/settings')
   const data = await res.json()
   maintainerSleep = data.maintainer_sleep ?? 10
 }
 
 function showLogin() {
   app.innerHTML = `
-    <div>
+    <div class="login-panel">
       <h1>OC Level Maintainer</h1>
-      <p id="login-error"></p>
-      <input id="login-password" type="password" placeholder="Password">
-      <button id="login-btn">Login</button>
+      <p class="login-hint">
+        Enter your network key &mdash; the <code>api_key</code> from your Connector
+        computer's <code>config.lua</code>. It decides which AE2 network you see.
+      </p>
+      <p id="login-error" class="login-error"></p>
+      <input id="login-key" type="password" placeholder="Network key" autocomplete="current-password">
+      <button id="login-btn">Connect</button>
     </div>
   `
-  document.getElementById('login-btn').onclick = async () => {
-    const password = document.getElementById('login-password').value
+  const keyInput = document.getElementById('login-key')
+  const submit = async () => {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password })
+      body: JSON.stringify({ key: keyInput.value.trim() })
     })
     if (res.ok) {
       init()
     } else {
-      document.getElementById('login-error').textContent = msg.loginFailed
+      const body = await res.json().catch(() => ({}))
+      document.getElementById('login-error').textContent = body.error === 'too many attempts, wait 5 minutes'
+        ? 'Too many attempts. Wait 5 minutes.'
+        : msg.loginFailed
     }
   }
+  document.getElementById('login-btn').onclick = submit
+  keyInput.onkeydown = e => { if (e.key === 'Enter') submit() }
+  keyInput.focus()
 }
 
 async function saveTarget(label, data) {
   try {
-    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
+    const res = await fetch(`/api/targets/${encodeURIComponent(label)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -183,7 +195,7 @@ async function addTarget(label, threshold, batchSize, isFluid, enabled) {
   if (parsedBatch > 9000000000000000) parsedBatch = 9000000000000000
 
   try {
-    const res = await fetch(`/api/targets/${networkId}`, {
+    const res = await fetch('/api/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -208,7 +220,7 @@ async function removeTarget(label) {
   clearTimeout(timers[label])
   delete timers[label]
   try {
-    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, { method: 'DELETE' })
+    const res = await fetch(`/api/targets/${encodeURIComponent(label)}`, { method: 'DELETE' })
     if (!res.ok) throw new Error()
     isDirty = true
     await fetchTargets()
@@ -221,9 +233,9 @@ async function removeTarget(label) {
 async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
   const old = targets.find(t => t.label === oldLabel)
   try {
-    const res1 = await fetch(`/api/targets/${networkId}/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
+    const res1 = await fetch(`/api/targets/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
     if (!res1.ok) throw new Error()
-    const res2 = await fetch(`/api/targets/${networkId}`, {
+    const res2 = await fetch('/api/targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -295,7 +307,7 @@ function openItemPicker(onSelect) {
 }
 
 function connectWs() {
-  if (document.hidden) return
+  if (document.hidden || !networkId) return
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${proto}://${location.host}/ws`)
 
@@ -319,7 +331,11 @@ function connectWs() {
     }
   }
 
-  ws.onclose = () => { if (!document.hidden) setTimeout(connectWs, 3000) }
+  // 4001 = server rejected the session; retrying would spin forever.
+  ws.onclose = (e) => {
+    if (e.code === 4001) { networkId = null; network = null; showLogin(); return }
+    if (!document.hidden) setTimeout(connectWs, 3000)
+  }
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -408,7 +424,7 @@ function render() {
     if (!val) return
     clearTimeout(sleepTimer)
     sleepTimer = setTimeout(async () => {
-      await fetch(`/api/settings/${networkId}`, {
+      await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ maintainer_sleep: val })
@@ -429,24 +445,31 @@ function render() {
   renderTable()
 }
 
+function formatLastSync(ts) {
+  if (!ts) return 'never synced'
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (secs < 60) return `synced ${secs}s ago`
+  if (secs < 3600) return `synced ${Math.round(secs / 60)}m ago`
+  return `synced ${Math.round(secs / 3600)}h ago`
+}
+
+// One key == one OC instance, so there is nothing to switch between here.
+// The bar just confirms which network the key unlocked.
 function renderNetworkBar() {
   const bar = document.getElementById('network-bar')
-
-  if (networks.length <= 1) return
+  if (!bar || !network) return
 
   bar.innerHTML = `
-    <label>Network:
-      <select id="network-select">
-        ${networks.map(n => `<option value="${n}"${n === networkId ? ' selected' : ''}>${n}</option>`).join('')}
-      </select>
-    </label>
+    <span class="network-name">${network.name}</span>
+    <span class="network-meta">${network.registry.label} &middot; ${formatLastSync(network.last_sync_at)}</span>
+    <button id="logout-btn" class="logout-btn">Log out</button>
   `
 
-  document.getElementById('network-select').onchange = async (e) => {
-    Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
-    networkId = e.target.value
-    await Promise.all([fetchTargets(), fetchStock()])
-    render()
+  document.getElementById('logout-btn').onclick = async () => {
+    await fetch('/api/logout', { method: 'POST' })
+    network = null
+    networkId = null
+    showLogin()
   }
 }
 
@@ -1216,10 +1239,11 @@ function getRowData(label) {
 
 async function init() {
   try {
-    networks = await fetchNetworks()
-    if (networks === null) { showLogin(); return }
-    networkId = networks[0] || 'main'
-    await Promise.all([fetchTargets(), fetchStock(), fetchRegistry(), fetchSettings()])
+    network = await fetchMe()
+    if (network === null) { showLogin(); return }
+    networkId = network.id
+    await fetchRegistry()
+    await Promise.all([fetchTargets(), fetchStock(), fetchSettings()])
     render()
     connectWs()
   } catch {

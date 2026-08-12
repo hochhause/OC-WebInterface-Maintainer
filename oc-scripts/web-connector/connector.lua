@@ -11,6 +11,15 @@ local function log(msg)
   print("[" .. os.date("%H:%M:%S") .. "] " .. tostring(msg))
 end
 
+if not cfg.api_key or #cfg.api_key < 16 then
+  print("No api_key set in config.lua.")
+  print("")
+  print("The key identifies this AE2 network and is also your website login.")
+  print("Run 'install-connector' to generate one, or edit config.lua and set")
+  print("api_key to a random string of at least 16 characters.")
+  return
+end
+
 local function post(path, body)
   local url = cfg.server .. path
   local data = json.encode(body)
@@ -56,14 +65,17 @@ while true do
     log("no response from maintainer")
     os.sleep(cfg.poll_interval)
   else
+    -- No network id is sent: the server derives it from the api_key alone.
     local result = post("/api/sync", {
-      network_id = cfg.network_id,
+      name = cfg.name,
       stock = stockData.stock,
       status = stockData.status,
     })
     stockData = nil
 
-    if result and result.targets then
+    if result and result.error then
+      log("server rejected: " .. tostring(result.error))
+    elseif result and result.targets then
       local targetStr = serialization.serialize(result.targets)
       if targetStr ~= lastTargetsStr then
         lastTargetsStr = targetStr

@@ -1,0 +1,24 @@
+services:
+  oc-maintainer:
+    build: .
+    image: oc-web-interface-maintainer
+    container_name: oc-maintainer
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+      # Set to "false" once your networks are registered, to stop new
+      # OC computers from claiming a network on this server.
+      OPEN_REGISTRATION: "true"
+    volumes:
+      - oc-maintainer-data:/data
+
+# Named volume: survives `docker compose down`, image rebuilds and updates.
+# Back it up with:
+#   docker run --rm -v oc-maintainer-data:/data -v ${PWD}:/backup alpine \
+#     tar czf /backup/oc-maintainer-backup.tar.gz -C /data .
+volumes:
+  oc-maintainer-data:
+    name: oc-maintainer-data
