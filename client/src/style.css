@@ -227,6 +227,8 @@ button:disabled {
 tr.status-ok { background: rgba(60, 140, 80, 0.35); }
 tr.status-crafting { background: rgba(60, 110, 200, 0.35); }
 tr.status-error { background: rgba(180, 50, 50, 0.4); }
+/* Deferred for want of a free crafting CPU, not a failure. */
+tr.status-waiting { background: rgba(200, 150, 40, 0.32); }
 
 tr.row-disabled td:not(:nth-child(1)):not(:nth-child(2)):not(:nth-child(8)) {
   opacity: 0.65;
@@ -471,6 +473,71 @@ tr.group-collapsed-row:hover {
   white-space: nowrap;
 }
 
+.group-schedule-badge {
+  color: #aaa;
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+/* Schedules panel */
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 0.85rem;
+  color: #bbb;
+  border-bottom: 1px solid #232323;
+  flex-wrap: wrap;
+}
+
+.schedule-row:last-child {
+  border-bottom: none;
+}
+
+.schedule-name {
+  color: #e8e060;
+  min-width: 160px;
+}
+
+.schedule-detail {
+  color: #888;
+  flex: 1;
+}
+
+.schedule-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.schedule-field input {
+  width: 76px;
+  padding: 3px 6px;
+}
+
+.schedule-age {
+  color: #888;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.schedule-gated {
+  color: #d8a038;
+}
+
+.schedule-hint {
+  color: #777;
+  font-size: 0.8rem;
+  padding-top: 6px;
+}
+
+.run-now-btn {
+  min-width: 0;
+  padding: 3px 10px;
+}
+
 /* Toast Notification System */
 .toast-container {
   position: fixed;
@@ -549,8 +616,20 @@ tr.group-collapsed-row:hover {
 
 .count-stocked { color: #55ff55; }
 .count-crafting { color: #6699ff; }
+.count-waiting { color: #e0b040; }
 .count-failed { color: #ff5555; }
 .count-disabled { color: #999; }
+
+.network-live {
+  color: #999;
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.tps-good { color: #55ff55; }
+.tps-slow { color: #e0b040; }
+.tps-bad { color: #ff5555; }
 
 .sort-container {
   display: flex;

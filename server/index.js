@@ -4,7 +4,8 @@ import { createServer } from 'http'
 import { randomBytes } from 'crypto'
 import { WebSocketServer } from 'ws'
 import {
-  getTargets, upsertTarget, deleteTarget,
+  getTargets, upsertTarget, deleteTarget, setTargetOrder,
+  getGroups, replaceGroups, updateGroup, deleteGroup, bumpRunSeq,
   getStock, updateStock,
   getSettings, setSettings,
   findNetworkByKey, getNetwork, createNetwork, touchNetwork, setNetworkKey, seedLegacyNetwork,
@@ -145,6 +146,11 @@ function withIcons(networkId, targets) {
 
 const lastSync = new Map()
 const lastStockStr = new Map()
+const lastPushStr = new Map()
+// Last status blob the maintainer reported (per-item state, TPS, CPU counts,
+// per-group check ages). Live data, not worth a table -- a fresh page load gets
+// it from here instead of waiting up to a full poll for the next broadcast.
+const lastStatus = new Map()
 const loginAttempts = new Map()
 const apiHits = new Map()
 
@@ -222,6 +228,13 @@ function broadcastTargets(networkId) {
   })
 }
 
+// Group membership and row order live on the targets, so anything touching a
+// group has to resend both halves or the other browsers redraw a torn layout.
+function broadcastLayout(networkId) {
+  broadcastTargets(networkId)
+  broadcast(networkId, { type: 'groups', network_id: networkId, groups: getGroups(networkId) })
+}
+
 /* ---- connector ---- */
 
 app.post('/api/sync', connectorAuth, syncRateLimit, (req, res) => {
@@ -230,11 +243,20 @@ app.post('/api/sync', connectorAuth, syncRateLimit, (req, res) => {
 
   touchNetwork(networkId, typeof name === 'string' && name.trim() ? name.trim() : null)
 
+  if (status) lastStatus.set(networkId, status)
+
   if (stock) {
-    const str = JSON.stringify({ stock, status })
-    if (str !== lastStockStr.get(networkId)) {
-      lastStockStr.set(networkId, str)
+    // Stock counts settle; TPS and check ages move every poll. Splitting the two
+    // comparisons keeps the DB write on real changes while still pushing the
+    // live numbers out to open browsers.
+    const stockStr = JSON.stringify(stock)
+    if (stockStr !== lastStockStr.get(networkId)) {
+      lastStockStr.set(networkId, stockStr)
       updateStock(networkId, stock)
+    }
+    const pushStr = JSON.stringify({ stock, status })
+    if (pushStr !== lastPushStr.get(networkId)) {
+      lastPushStr.set(networkId, pushStr)
       broadcast(networkId, { type: 'stock', network_id: networkId, stock, status })
     }
   }
@@ -246,10 +268,28 @@ app.post('/api/sync', connectorAuth, syncRateLimit, (req, res) => {
       threshold: t.threshold,
       batch_size: t.batch_size,
       fluid_tag: t.fluid_tag,
-      is_fluid: t.is_fluid
+      is_fluid: t.is_fluid,
+      group_id: t.group_id
     }))
 
-  res.json({ targets: ocTargets, maintainer_sleep: getSettings(networkId).maintainer_sleep })
+  const settings = getSettings(networkId)
+
+  res.json({
+    targets: ocTargets,
+    maintainer_sleep: settings.maintainer_sleep,
+    cpu_limit: settings.cpu_limit,
+    default_run_seq: settings.default_run_seq,
+    groups: getGroups(networkId).map(g => ({
+      id: g.id,
+      name: g.name,
+      interval_s: g.interval_s,
+      min_tps: g.min_tps,
+      run_seq: g.run_seq
+    })),
+    // The only real clock an OC computer can reach without a hack. The maintainer
+    // measures TPS against it (game seconds elapsed vs real seconds elapsed).
+    now: Date.now()
+  })
 })
 
 /* ---- session ---- */
@@ -338,7 +378,82 @@ app.put('/api/targets/:label', browserAuth, (req, res) => {
 
 app.delete('/api/targets/:label', browserAuth, (req, res) => {
   deleteTarget(req.networkId, req.params.label)
+  broadcastLayout(req.networkId)
+  res.json({ ok: true })
+})
+
+/* ---- groups & row order ---- */
+
+app.get('/api/groups', browserAuth, (req, res) => {
+  res.json(getGroups(req.networkId))
+})
+
+// Replace-all: the bracket editor computes the next layout wholesale, and the
+// only sane merge of two people dragging at once is last write wins.
+app.put('/api/groups', browserAuth, (req, res) => {
+  const incoming = req.body?.groups
+  if (!Array.isArray(incoming)) return res.status(400).json({ error: 'groups array required' })
+  if (incoming.length > 200) return res.status(400).json({ error: 'too many groups' })
+  replaceGroups(req.networkId, incoming)
+  broadcastLayout(req.networkId)
+  res.json({ groups: getGroups(req.networkId) })
+})
+
+app.put('/api/groups/:id', browserAuth, (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid group' })
+
+  const patch = {}
+  for (const field of ['name', 'collapsed', 'interval_s', 'min_tps']) {
+    if (field in req.body) patch[field] = req.body[field]
+  }
+  if (patch.interval_s !== undefined && patch.interval_s !== null && patch.interval_s !== '') {
+    const secs = Number(patch.interval_s)
+    if (!Number.isFinite(secs) || secs < 5 || secs > 86400) {
+      return res.status(400).json({ error: 'interval must be 5..86400 seconds' })
+    }
+  }
+  if (patch.min_tps !== undefined && patch.min_tps !== null && patch.min_tps !== '') {
+    const tps = Number(patch.min_tps)
+    if (!Number.isFinite(tps) || tps < 0 || tps > 20) {
+      return res.status(400).json({ error: 'min_tps must be 0..20' })
+    }
+  }
+
+  if (!updateGroup(req.networkId, id, patch)) return res.status(404).json({ error: 'unknown group' })
+  broadcastLayout(req.networkId)
+  res.json({ ok: true })
+})
+
+app.delete('/api/groups/:id', browserAuth, (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid group' })
+  deleteGroup(req.networkId, id)
+  broadcastLayout(req.networkId)
+  res.json({ ok: true })
+})
+
+app.put('/api/order', browserAuth, (req, res) => {
+  const labels = req.body?.labels
+  if (!Array.isArray(labels) || labels.some(l => typeof l !== 'string')) {
+    return res.status(400).json({ error: 'labels array required' })
+  }
+  setTargetOrder(req.networkId, labels)
   broadcastTargets(req.networkId)
+  res.json({ ok: true })
+})
+
+/* ---- run now: bump a counter the maintainer compares against on its next poll ---- */
+
+app.post('/api/run-now', browserAuth, (req, res) => {
+  bumpRunSeq(req.networkId, null)
+  res.json({ ok: true })
+})
+
+app.post('/api/run-now/:groupId', browserAuth, (req, res) => {
+  const id = Number(req.params.groupId)
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid group' })
+  if (!bumpRunSeq(req.networkId, id)) return res.status(404).json({ error: 'unknown group' })
   res.json({ ok: true })
 })
 
@@ -348,14 +463,35 @@ app.get('/api/stock', browserAuth, (req, res) => {
   res.json(getStock(req.networkId))
 })
 
+// Whatever the maintainer last reported about itself. Empty until the first sync.
+app.get('/api/status', browserAuth, (req, res) => {
+  res.json(lastStatus.get(req.networkId) ?? {})
+})
+
 app.get('/api/settings', browserAuth, (req, res) => {
   res.json(getSettings(req.networkId))
 })
 
 app.put('/api/settings', browserAuth, (req, res) => {
-  const sleep = Number(req.body.maintainer_sleep)
-  if (!Number.isFinite(sleep) || sleep < 5) return res.status(400).json({ error: 'invalid' })
-  setSettings(req.networkId, { maintainer_sleep: Math.floor(sleep) })
+  const patch = {}
+
+  if ('maintainer_sleep' in req.body) {
+    const sleep = Number(req.body.maintainer_sleep)
+    if (!Number.isFinite(sleep) || sleep < 5) return res.status(400).json({ error: 'invalid' })
+    patch.maintainer_sleep = Math.floor(sleep)
+  }
+
+  // Positive: never run more than N of our own jobs at once. Negative: always
+  // leave |N| CPUs free for the humans. Zero: only the "never submit into zero
+  // free CPUs" floor the maintainer applies regardless.
+  if ('cpu_limit' in req.body) {
+    const limit = Number(req.body.cpu_limit)
+    if (!Number.isFinite(limit) || Math.abs(limit) > 1024) return res.status(400).json({ error: 'invalid' })
+    patch.cpu_limit = Math.trunc(limit)
+  }
+
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'nothing to update' })
+  setSettings(req.networkId, patch)
   res.json({ ok: true })
 })
 
@@ -365,7 +501,12 @@ setInterval(() => {
   sweepSessions()
   const cutoff = Date.now() - 60 * 60_000
   for (const [id, at] of lastSync) {
-    if (at < cutoff) { lastSync.delete(id); lastStockStr.delete(id) }
+    if (at < cutoff) {
+      lastSync.delete(id)
+      lastStockStr.delete(id)
+      lastPushStr.delete(id)
+      lastStatus.delete(id)
+    }
   }
   for (const [ip, entry] of loginAttempts) {
     if (Date.now() > entry.resetAt) loginAttempts.delete(ip)

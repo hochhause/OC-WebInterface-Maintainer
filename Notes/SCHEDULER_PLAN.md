@@ -1,9 +1,23 @@
 # Plan — CPU limit · per-group schedules · run-now · TPS gate
 
-**Status:** APPROVED 2026-08-12, revised same day ([[DECISIONS#D005]], [[DECISIONS#D006]]), no code yet.
-Branch `multiuser-web`. See [[DECISIONS#D001]] for tenancy model.
+**Status: IMPLEMENTED** 2026-08-12 on branch `maintainer-scheduler`.
+Planned + revised the same day ([[DECISIONS#D005]], [[DECISIONS#D006]]); what the
+code does differently is recorded in **[[DECISIONS#D007]]** — read that alongside
+this file, four things below did not survive contact:
+
+1. The schedule clock is `computer.uptime() * 20`, not the `os.time()` world-tick
+   formula in Feature 2 (that clock is `/time set`-able, bed-skippable and
+   freezable by `doDaylightCycle false`). The clamping described here is therefore
+   unnecessary and does not exist.
+2. TPS is measured against the web server's `Date.now()` relayed by the connector
+   (or a `/tmp` mtime probe when serverless), not against a world-tick delta — the
+   latter is 20 by construction. Unknown TPS = gate open.
+3. `groups.enabled`, `groups.position` and `POST /api/groups/import` were dropped
+   as second sources of truth; `gate JSON` is a single `min_tps` column.
+4. `PUT /api/groups` merges omitted fields instead of nulling them.
+
 Time-of-day / player-count gates: **DISCARDED**. TPS gate: **REVIVED** (D006).
-Schedule clock: **in-game ticks**, not real time (D006).
+See [[DECISIONS#D001]] for the tenancy model this builds on.
 
 ## Verified facts (read from code, 2026-08-12)
 

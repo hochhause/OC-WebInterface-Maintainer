@@ -10,6 +10,7 @@ local cacheTime = 0
 local CACHE_TTL = 600
 
 local craftingCache = nil
+local cpuCache = { total = 0, busy = 0 }
 local craftingCacheTime = 0
 local CRAFTING_CACHE_TTL = 30
 
@@ -153,23 +154,32 @@ function ae2.getFluidCount(name, fluidName)
   return fluid and (fluid.size or fluid.amount) or 0
 end
 
+-- Returns what the network is crafting, plus how many crafting CPUs exist and how
+-- many are occupied. The CPU counts come free: the walk over getCpus() to find
+-- the active jobs is the same walk that counts them.
 function ae2.crafting()
   local now = computer.uptime()
   if not craftingCache or now - craftingCacheTime >= CRAFTING_CACHE_TTL then
     queryCount = queryCount + 1
     local cpus = ME.getCpus()
     local active = {}
+    local total, busy = 0, 0
     for _, v in pairs(cpus) do
       queryCount = queryCount + 1
+      total = total + 1
       local output = v.cpu.finalOutput()
-      if output then active[output.label] = output.size or 1 end
+      if output then
+        busy = busy + 1
+        active[output.label] = output.size or 1
+      end
     end
     craftingCache = active
+    cpuCache = { total = total, busy = busy }
     craftingCacheTime = now
   end
   local copy = {}
   for k, v in pairs(craftingCache) do copy[k] = v end
-  return copy
+  return copy, { total = cpuCache.total, busy = cpuCache.busy }
 end
 
 function ae2.clearCraftingCache()

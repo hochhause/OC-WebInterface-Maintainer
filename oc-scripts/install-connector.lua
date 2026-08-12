@@ -3,7 +3,7 @@ local filesystem = require("filesystem")
 local computer = require("computer")
 
 local repo = "https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/web-connector/"
-local scripts = {"connector.lua", "json.lua"}
+local scripts = {"connector.lua", "json.lua", "chunk.lua"}
 
 local function cwd(path)
   return shell.getWorkingDirectory() .. "/" .. path

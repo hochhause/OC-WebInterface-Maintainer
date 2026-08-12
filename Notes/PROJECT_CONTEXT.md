@@ -1,6 +1,8 @@
 # Project Context
 
 Multi-tenant state as of 2026-08-12, branch `multiuser-web`. Design: [[MULTIUSER_PLAN]] · [[DECISIONS#D001]]
+Scheduler feature set on top of it: branch `maintainer-scheduler`, [[SCHEDULER_PLAN]] · [[DECISIONS#D007]]
+(section "Scheduler" at the bottom).
 
 ## Identity model
 
@@ -88,3 +90,77 @@ No harness in repo. Smoke scripts live in the session scratchpad (`smoke.mjs`,
 `smoke2.mjs`): 24 multi-tenant checks (auth, isolation, scoped WS, legacy routes
 gone) + 8 legacy/SINGLE_USER checks — all passing 2026-08-12. Client vite build OK.
 better-sqlite3 bumped ^9.4.3 → ^12 (Node 24 prebuilds).
+
+Scheduler branch adds (also scratchpad): `smoke-scheduler.mjs` — 58 HTTP checks
+over groups, order, run-now, cpu_limit, live status, isolation of every new route;
+and a Lua harness (`harness.lua` + `run-lua.mjs`, fengari + luaparse) — 54 checks
+running the real maintainer modules against stubbed OC APIs. Both green 2026-08-12.
+`better-sqlite3` does not compile on Node 25 without MSVC; the HTTP suite runs with
+`node:sqlite` swapped in through an ESM resolve hook (`sqlite-shim.mjs`).
+
+# Scheduler
+
+## Schema additions
+
+- `targets` + `group_id INTEGER` (NULL = ungrouped), `position INTEGER DEFAULT 0`
+  (0 everywhere until first drag; `ORDER BY position, rowid` keeps old rows put).
+- `settings` + `cpu_limit INTEGER DEFAULT 0`, `default_run_seq INTEGER DEFAULT 0`.
+- `groups (network_id, id, name, collapsed, interval_s NULL, min_tps NULL, run_seq)`,
+  PK `(network_id, id)`, ids chosen by the browser.
+- All added in CREATE TABLE *and* as try/catch ALTERs, matching the `enabled` pattern.
+
+## server/db.js
+
+- `getGroups / replaceGroups / updateGroup / deleteGroup / bumpRunSeq / setTargetOrder`.
+- `replaceGroups` — replace-all for membership; omitted fields keep stored values,
+  `run_seq` survives an id, then `pruneGroups` drops groups under two members and
+  releases orphaned members. Also runs after `deleteTarget`.
+- `setSettings(networkId, patch)` merges instead of overwriting.
+
+## server/index.js
+
+- `GET/PUT /api/groups`, `PUT|DELETE /api/groups/:id`, `PUT /api/order`,
+  `POST /api/run-now[/:groupId]`, `GET /api/status`. All `browserAuth`.
+- `/api/sync` response gains `groups[]`, `cpu_limit`, `default_run_seq`, `now`
+  (Date.now(), the maintainer's only real clock) and `group_id` per target.
+- `lastStatus` Map holds the maintainer's last status blob for `/api/status`;
+  broadcast dedup split from the DB-write dedup (TPS changes every poll).
+- `broadcastLayout` sends `targets` + `groups` together — membership lives on the
+  targets, so half an update draws a torn layout.
+
+## client/src/main.js
+
+- `loadGroups()` rebuilds `{id, name, labels[], interval_s, min_tps}` from `groups`
+  + `targets.group_id`; `saveGroups(next)` optimistically patches both local copies,
+  redraws, PUTs, refetches. `patchGroup / removeGroup / runNow` for single edits.
+- `ORDERED_MODES = ['default','custom']` — brackets draw in both, gestures need Custom.
+- `renderSchedulePanel()` below the add panel: default-schedule row + one row per
+  group (interval, min_tps, check age, Run now). Skips redraw while focused.
+- `migrateLocalLayout()` uploads `maintainer_groups_*` / `maintainer_custom_order_*`
+  once (order first, then groups) and deletes them; keeps them on failure.
+- `updateLiveMeta()` paints TPS + busy/total CPUs into the network bar.
+
+## oc-scripts/level-maintainer
+
+- `src/scheduler.lua` — `ticks()` (= `uptime * 20`), `sample()`, `feedRealTime(s)`,
+  `tps()`, `clockSource()`. See [[DECISIONS#D007]] for why not the world clock.
+- `src/state.lua` — `/home/maintainer-state.lua`, serialized Lua, `load/save/path`.
+- `src/chunk.lua` — `send(tunnel,payload)` (unframed while it fits, else
+  `c|id|i|n|body` frames), `receiver()`, `feed(rx,msg)`. Mirrored verbatim at
+  `web-connector/chunk.lua`; both installers fetch their own copy.
+- `src/ae2.lua` — `crafting()` now also returns `{total, busy}` CPU counts from the
+  same `getCpus()` walk.
+- `maintainer.lua` — schedule keys (`0` = default, else group id), `nextRun` /
+  `checkedAt` / `lastGroupSeq` bookkeeping, per-cycle CPU budget, sticky per-item
+  status (`crafting/requested/failed/waiting_cpu`), status payload with `tps`,
+  `cpus` and `group_checked` (string keys, or the connector's JSON encoder would
+  turn them into an array). `event.pull` instead of `os.sleep` so a push wakes it.
+- `config.lua` — `cpu_limit`, optional 4th slot per item (group id), `groups` table;
+  only used until a push lands, then the state file wins.
+
+## oc-scripts/web-connector
+
+- `connector.lua` — one config blob (targets, groups, cpu_limit, default_run_seq,
+  sleep) pushed on change through `chunk.send`; relays `now:<ms>` every poll;
+  `ask()` reassembles multi-frame replies. `setsleep:` removed (folded into the blob,
+  still honoured by the maintainer for older connectors).

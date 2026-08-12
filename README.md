@@ -165,6 +165,24 @@ return {
 }
 ```
 
+The Maintainer computer's `config.lua` only matters until the website pushes a
+config for the first time (after that it runs from `/home/maintainer-state.lua`).
+For a Maintainer with no Connector, it's where you set everything:
+
+```lua
+return {
+  sleep = 10,       -- default schedule, in game seconds
+  cpu_limit = 0,    -- 0 off, 3 = max 3 own jobs, -2 = leave 2 CPUs for players
+  items = {
+    ["Iron Plate"] = {nil, 16},              -- {threshold, batch}
+    ["Certus Quartz Dust"] = {10000, 64, nil, 1},  -- ...fluid tag, group id
+  },
+  groups = {
+    [1] = { name = "Ores", interval_s = 600, min_tps = 18 },
+  },
+}
+```
+
 Lost your key? Run `install-connector` on the Connector computer again, or
 `edit config.lua` and read it there.
 
@@ -173,10 +191,74 @@ it registers as a *new, empty* network. The old one keeps its data under the old
 
 ---
 
-Actually using the site below here : WIP  
-  
-  In sorting -> Custom, you can drag LEFT in the blank area left of the handle to create bracket groups similar to NEI Calculator (literally click drag in those areas like you would with NEI calculator groupping)
-    
-  Bracket groups can be clicked to collapse then moved around and renamed. (Enable/Disable on collapse group disables/enables all things in the group)
+## Using the site
 
-  The UX for this isn't that good, so likely this will be reworked.
+### Groups
+
+In sorting -> Custom, you can drag LEFT in the blank area left of the handle to create
+bracket groups similar to NEI Calculator (literally click drag in those areas like you
+would with NEI calculator groupping)
+
+Bracket groups can be clicked to collapse then moved around and renamed.
+(Enable/Disable on collapse group disables/enables all things in the group)
+Right-click the bracket area to ungroup.
+
+The UX for this isn't that good, so likely this will be reworked.
+
+Groups and your row order are saved **on the server**, not in your browser, so the
+Maintainer can act on them and everyone using your key sees the same layout. If you
+had groups from an older version, they get uploaded automatically the first time you
+open the site.
+
+### Schedules
+
+Below the table there's a row per schedule.
+
+- **Default schedule** — everything that isn't in a group with its own interval.
+  Its interval is the "Check every N s" box in the toolbar.
+- **A group with an interval** — checked every N seconds instead. Good for slow
+  bulk things: set a group of ores to 600s and the Maintainer stops asking your ME
+  system about them every 10 seconds.
+- **min TPS** — optional. That group is skipped while the server runs slower than
+  the number you set. Leave it empty for off.
+- **Run now** — checks that schedule immediately. Takes up to one Connector poll
+  (~10s), so the button says "queued..." until the Maintainer confirms.
+
+Seconds are *game* seconds. If the server is lagging at 10 TPS, a "600s" group is
+checked every 20 real minutes — the same way your machines are running at half
+speed. Nothing bursts or shifts after a server freeze either.
+
+A collapsed group shows how long ago it was last checked. A 30-minute group
+legitimately shows half-hour-old stock counts; that's what the label is for.
+
+### CPU limit
+
+Next to the check interval.
+
+| Value | Meaning |
+|---|---|
+| `0` | No limit, but never submit a job when zero crafting CPUs are free |
+| `3` | Never run more than 3 jobs of our own at once |
+| `-2` | Always leave 2 CPUs free for players |
+
+Items that wanted crafting but couldn't get a CPU show up amber as "waiting for
+CPU" and are retried next cycle, instead of the wall of "failed to request" the
+old version produced when the CPUs were all busy.
+
+The header also shows measured server TPS and how many crafting CPUs are busy.
+
+### If the website goes down
+
+The Maintainer keeps running. Every config it accepts is written to
+`/home/maintainer-state.lua` on the Maintainer computer and loaded on boot, so an
+outage — or no web server at all — doesn't stop your crafting.
+
+That also means **running with no Connector is supported**: install just the
+Maintainer, `edit /home/maintainer-state.lua` (or `config.lua`, which is used while
+no state file exists) and it runs your schedules on its own. Delete the state file
+to go back to `config.lua`.
+
+> Updating from an older version: run both installers, `install-maintainer` and
+> `install-connector`. The two computers talk in a slightly different way now
+> (large messages get split into pieces), and only the new scripts on both sides
+> handle the biggest target lists.
