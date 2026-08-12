@@ -72,6 +72,10 @@ computer (32 chars a-z0-9) and lives in its `config.lua`.
 ## Deployment
 
 - `Dockerfile` — 3-stage (client build / server deps / slim runtime), `DATA_DIR=/data`, VOLUME /data.
+  The deps stage deletes `better-sqlite3/prebuilds` and rebuilds from source: the package
+  bundles a prebuilt binary per platform, its loader prefers those over anything node-gyp
+  produces, and the stock linux-x64 one segfaults on some hosts (Ryzen/Unraid, 2026-08-12) —
+  a crash loop with no log output at all.
 - `docker-compose.yml` — named volume `oc-maintainer-data` → `/data`; backup one-liner in comments.
 - `railway.json` — numReplicas pinned 1 (SQLite). Volume documented in README (mount `/data`;
   `RAILWAY_VOLUME_MOUNT_PATH` picked up automatically by db.js).

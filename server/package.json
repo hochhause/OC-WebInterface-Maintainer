@@ -6,6 +6,9 @@
     "start": "node index.js",
     "dev": "node --watch index.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.5",
