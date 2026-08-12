@@ -143,6 +143,9 @@ All optional, set in `server/.env` or your host's variables tab.
 | `PORT` | `3000` | Port to listen on |
 | `DATA_DIR` | `.` | Where `data.db` is written. Point at your volume. `RAILWAY_VOLUME_MOUNT_PATH` is used automatically if set. |
 | `OPEN_REGISTRATION` | `true` | `false` refuses api keys the server hasn't seen before, so no new networks can register |
+| `RATE_LIMIT` | `60` | Max requests per minute per IP across all of `/api` (and websocket connects). `0` disables. Default fits a connector polling every 10s plus a browser with room to spare. |
+| `BLOCKED_IPS` | unset | Comma-separated IPs that get `403` on everything. For when someone earns it. |
+| `TRUST_PROXY` | unset | `true` = read visitor IPs from `X-Forwarded-For`. Needed behind Caddy/nginx so rate limits hit visitors, not the proxy. Automatic on Railway. |
 | `SINGLE_USER` | unset | `true` = one network, no login for local browsers. Localhost only. |
 | `API_KEY` | unset | Legacy single-tenant installs only — seeds the old `main` network so existing databases keep working |
 | `BROWSER_PASSWORD` | unset | Legacy single-tenant installs only — still logs into the old `main` network |

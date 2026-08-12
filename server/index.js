@@ -33,6 +33,38 @@ if (SINGLE_USER) {
 }
 
 const app = express()
+
+// Behind a reverse proxy the socket address is the proxy, not the visitor --
+// without this every user would share one rate-limit bucket. Railway is always
+// proxied, so it's automatic there; set TRUST_PROXY=true behind Caddy/nginx.
+if (process.env.TRUST_PROXY === 'true' || process.env.RAILWAY_ENVIRONMENT) {
+  app.set('trust proxy', 1)
+}
+
+// Comma-separated IPs that get 403 on everything. Set it, redeploy, done.
+const blockedIps = new Set((process.env.BLOCKED_IPS ?? '').split(',').map(s => s.trim()).filter(Boolean))
+
+// Direct IPv4 sockets arrive as '::ffff:1.2.3.4' -- strip that so the IP a
+// user writes in BLOCKED_IPS matches what the server sees.
+function normIp(ip) {
+  return typeof ip === 'string' && ip.startsWith('::ffff:') ? ip.slice(7) : (ip ?? 'unknown')
+}
+
+// Client address for requests that don't go through express (WS upgrades).
+// Mirrors what req.ip does when trust proxy is on.
+function clientIp(req) {
+  if (app.get('trust proxy')) {
+    const fwd = req.headers['x-forwarded-for']
+    if (fwd) return normIp(fwd.split(',')[0].trim())
+  }
+  return normIp(req.socket?.remoteAddress)
+}
+
+app.use((req, res, next) => {
+  if (blockedIps.has(normIp(req.ip))) return res.status(403).end()
+  next()
+})
+
 app.use(express.json({ limit: '1mb' }))
 app.use(express.static('public'))
 
@@ -114,6 +146,34 @@ function withIcons(networkId, targets) {
 const lastSync = new Map()
 const lastStockStr = new Map()
 const loginAttempts = new Map()
+const apiHits = new Map()
+
+// Blunt per-IP ceiling over all of /api. Default 60 req/min: a connector at the
+// default 10s poll uses 6, a browser session a handful, so legit users never
+// notice while hammering gets a 429. Tune with RATE_LIMIT, 0 disables.
+const RATE_LIMIT = process.env.RATE_LIMIT === undefined ? 60 : Number(process.env.RATE_LIMIT)
+
+function rateHit(ip) {
+  if (!RATE_LIMIT) return false
+  const now = Date.now()
+  const entry = apiHits.get(ip)
+  if (!entry || now > entry.resetAt) {
+    apiHits.set(ip, { count: 1, resetAt: now + 60_000 })
+    return false
+  }
+  entry.count++
+  return entry.count > RATE_LIMIT
+}
+
+function apiRateLimit(req, res, next) {
+  if (rateHit(normIp(req.ip))) {
+    res.set('Retry-After', '60')
+    return res.status(429).json({ error: 'rate limited' })
+  }
+  next()
+}
+
+app.use('/api', apiRateLimit)
 
 function syncRateLimit(req, res, next) {
   const now = Date.now()
@@ -124,7 +184,7 @@ function syncRateLimit(req, res, next) {
 
 // Keys are high-entropy, but a public host still should not allow unlimited guessing.
 function loginRateLimit(req, res, next) {
-  const ip = req.socket.remoteAddress ?? 'unknown'
+  const ip = normIp(req.ip)
   const now = Date.now()
   const entry = loginAttempts.get(ip)
   if (!entry || now > entry.resetAt) {
@@ -139,6 +199,8 @@ function loginRateLimit(req, res, next) {
 /* ---- websocket: authenticated on upgrade, scoped per network ---- */
 
 wss.on('connection', (ws, req) => {
+  const ip = clientIp(req)
+  if (blockedIps.has(ip) || rateHit(ip)) return ws.close(1013, 'try again later')
   const networkId = networkFromRequest(req)
   if (!networkId) return ws.close(4001, 'unauthorized')
   ws.networkId = networkId
@@ -307,6 +369,9 @@ setInterval(() => {
   }
   for (const [ip, entry] of loginAttempts) {
     if (Date.now() > entry.resetAt) loginAttempts.delete(ip)
+  }
+  for (const [ip, entry] of apiHits) {
+    if (Date.now() > entry.resetAt) apiHits.delete(ip)
   }
 }, 60 * 60_000).unref()
 
