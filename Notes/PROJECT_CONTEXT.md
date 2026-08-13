@@ -168,3 +168,29 @@ running the real maintainer modules against stubbed OC APIs. Both green 2026-08-
   sleep) pushed on change through `chunk.send`; relays `now:<ms>` every poll;
   `ask()` reassembles multi-frame replies. `setsleep:` removed (folded into the blob,
   still honoured by the maintainer for older connectors).
+
+## oc-scripts/level-maintainer/src/ae2.lua — essentia support (2026-08-13)
+
+TE essentia lives in its own AE2 storage channel; `getItemInNetwork` never sees
+it, so counts always read 0 (the reported bug). GTNH's OC fork registers the
+`"essentia"` stack type and adds `ME.getEssentiaInNetwork([tag])`.
+
+- `essentiaAmount(tag)` — pcall'd single-aspect read, nil when aspect invalid or
+  method absent (non-TE packs degrade to old behavior).
+- `isEssentiaStack(stack)` — essentia stacks are `{name=<aspect tag>, amount=N}`,
+  no `.size`.
+- `itemCount()` — routes essentia stacks to `essentiaAmount(item.name)`.
+- `getCount(name)` — no craftable ⇒ fallback direct essentia read with
+  `name:lower()` as tag (registry labels are capitalized Latin aspect names).
+- `requestItem()` — label check relaxed: essentia matches by aspect tag.
+- `crafting()` — active-job size falls back `size → amount → 1`.
+
+## client/src/main.js — drag item into group (2026-08-13)
+
+- `joinGroup(label, groupId)` — moves label into target group, dissolves any
+  old group that drops below 2 members.
+- Dragging an item row over a **collapsed group row** highlights it
+  (`.group-drop-target`) and drops the item into the group like a folder;
+  Escape-cancel respected via `dropEffect === 'none'`. Group-over-group drag
+  still reorders. Expanded-group neighbor auto-join unchanged.
+

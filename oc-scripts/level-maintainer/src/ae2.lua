@@ -50,9 +50,28 @@ local function getStack(craftable)
   return (craftable.getStack or craftable.getItemStack)(craftable)
 end
 
+-- Thaumic Energistics essentia lives in its own AE2 storage channel, invisible
+-- to getItemInNetwork. GTNH's OC fork exposes it via getEssentiaInNetwork
+-- (absent on packs without TE -- everything here degrades to old behavior).
+local function essentiaAmount(tag)
+  if not ME.getEssentiaInNetwork then return nil end
+  queryCount = queryCount + 1
+  local ok, stack = pcall(ME.getEssentiaInNetwork, tag)
+  if not ok then return nil end -- not a valid aspect tag
+  return stack and (stack.amount or 0) or 0
+end
+
+-- Essentia stacks report {name=<aspect tag>, amount=N}; item stacks have .size.
+local function isEssentiaStack(stack)
+  return stack.amount ~= nil and stack.size == nil
+end
+
 local function itemCount(craftable)
   local item = getStack(craftable)
   if not item or not item.name then return 0, nil end
+  if isEssentiaStack(item) then
+    return essentiaAmount(item.name) or 0, item
+  end
   local found
   if item.tag then
     queryCount = queryCount + 1
@@ -67,8 +86,11 @@ end
 
 function ae2.getCount(name)
   local craftable = getCraftable(name)
-  if not craftable then return 0 end
-  return itemCount(craftable)
+  if craftable then return itemCount(craftable) end
+  -- No craftable: still count stored essentia (aspect tag = lowercased label)
+  local amount = essentiaAmount(name:lower())
+  if amount then return amount end
+  return 0
 end
 
 function ae2.requestItem(name, threshold, batch, currentCount)
@@ -87,7 +109,8 @@ function ae2.requestItem(name, threshold, batch, currentCount)
     if count >= threshold then return end
   end
   local item = itemStack or getStack(craftable)
-  if not item or item.label ~= name then
+  -- Essentia matches by aspect tag; TE's localized label can differ from ours.
+  if not item or (item.label ~= name and not (isEssentiaStack(item) and item.name == name:lower())) then
     return false, name .. " label mismatch or stack could not be resolved"
   end
   queryCount = queryCount + 1
@@ -170,7 +193,8 @@ function ae2.crafting()
       local output = v.cpu.finalOutput()
       if output then
         busy = busy + 1
-        active[output.label] = output.size or 1
+        -- item jobs report .size, essentia jobs report .amount
+        active[output.label] = output.size or output.amount or 1
       end
     end
     craftingCache = active

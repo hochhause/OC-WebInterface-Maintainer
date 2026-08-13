@@ -96,3 +96,11 @@ PR targets `multiuser-web`, not main.
 - `groups.enabled` and `groups.position` columns, and `POST /api/groups/import`
   — each would have been a second source of truth for something that already had
   one ([[DECISIONS#D007]]).
+
+## Essentia support + folder-drop grouping (2026-08-13, branch `multiuser-web`)
+
+- **Essentia counts fixed** — TE essentia is its own AE2 storage channel;
+  maintainer now reads it via `getEssentiaInNetwork` (GTNH OC fork). Auto-detected
+  per stack shape, zero config, degrades cleanly on packs without TE.
+- **Drag item onto collapsed group** — files the item into the group like a
+  folder, with hover highlight. See [[PROJECT_CONTEXT]].

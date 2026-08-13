@@ -1153,6 +1153,12 @@ function renderTable() {
   setupBracketDrag(container)
 
   let draggedRow = null
+  let dropGroupId = null
+
+  function clearDropTarget() {
+    dropGroupId = null
+    container.querySelectorAll('tr.group-drop-target').forEach(r => r.classList.remove('group-drop-target'))
+  }
 
   function moveDraggedTo(e, targetRow) {
     e.preventDefault()
@@ -1199,17 +1205,25 @@ function renderTable() {
 
     // Order first, then membership: autoJoinGroup refetches the targets, and a
     // refetch that overtakes the order write would snap the row back.
-    row.addEventListener('dragend', async () => {
+    row.addEventListener('dragend', async (e) => {
       if (!draggedRow) { isDragging = false; return }
       draggedRow.classList.remove('dragging')
       const label = draggedRow.dataset.row
+      const targetGroupId = dropGroupId
       draggedRow = null
       isDragging = false
+      clearDropTarget()
       await saveCustomOrder()
+      // Dropped onto a collapsed group row: file the item into that group.
+      // dropEffect is 'none' when the drag was cancelled (Escape).
+      if (targetGroupId !== null && e.dataTransfer.dropEffect !== 'none' && joinGroup(label, targetGroupId)) return
       autoJoinGroup(label)
     })
 
-    row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
+    row.addEventListener('dragover', (e) => {
+      clearDropTarget()
+      moveDraggedTo(e, row)
+    })
   })
 
   container.querySelectorAll('tr[data-group-id]').forEach(row => {
@@ -1232,9 +1246,25 @@ function renderTable() {
         draggedRow = null
       }
       isDragging = false
+      clearDropTarget()
       saveCustomOrder()
     })
-    row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
+    row.addEventListener('dragover', (e) => {
+      // An item dragged over a collapsed group targets the group (folder drop);
+      // a group dragged over another group just reorders as before.
+      if (draggedRow?.dataset?.row !== undefined) {
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        const gid = parseInt(row.dataset.groupId)
+        if (dropGroupId !== gid) {
+          clearDropTarget()
+          dropGroupId = gid
+          row.classList.add('group-drop-target')
+        }
+        return
+      }
+      moveDraggedTo(e, row)
+    })
   })
 }
 
@@ -1450,6 +1480,20 @@ function renderSchedulePanel() {
   container.querySelectorAll('.schedule-tps').forEach(input => {
     input.addEventListener('change', () => commitField(input, 'min_tps', 0, 20))
   })
+}
+
+// Folder drop: move one label into an existing group. saveGroups handles the
+// server write, redraw and the dissolution of any group left with one member.
+function joinGroup(label, groupId) {
+  const groups = loadGroups()
+  const target = groups.find(g => g.id === groupId)
+  if (!target || target.labels.includes(label)) return false
+  saveGroups(groups
+    .map(g => g.id === groupId
+      ? { ...g, labels: [...g.labels, label] }
+      : { ...g, labels: g.labels.filter(l => l !== label) })
+    .filter(g => g.labels.length >= 2))
+  return true
 }
 
 function autoJoinGroup(label) {
