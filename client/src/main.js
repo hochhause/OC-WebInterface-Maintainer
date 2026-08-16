@@ -22,8 +22,8 @@ let sleepTimer = null
 let cpuTimer = null
 let maintainerSleep = 10
 let cpuLimit = 0
-let pendingAdd = null
-let addDefaults = { threshold: null, batch_size: 1, enabled: true }
+let pendingAdds = []
+let addDefaults = { threshold: null, batch_size: 1, enabled: true, group_id: null }
 let isDirty = false
 let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
 // Schedules are set-and-forget, and a network with a dozen groups would other-
@@ -224,29 +224,35 @@ async function saveTarget(label, data) {
   }
 }
 
-async function addTarget(label, threshold, batchSize, isFluid, enabled) {
+// One request for the whole selection: a picker run of twenty items would
+// otherwise be twenty POSTs, which the rate limiter would cut off halfway.
+async function addTargets(items, threshold, batchSize, enabled, groupId) {
   let parsedThreshold = threshold === '' ? null : (parseAmount(threshold) ?? Number(threshold))
   if (parsedThreshold !== null && parsedThreshold > 9000000000000000) parsedThreshold = 9000000000000000
   let parsedBatch = parseAmount(batchSize) ?? Number(batchSize) ?? 1
   if (parsedBatch > 9000000000000000) parsedBatch = 9000000000000000
 
   try {
-    const res = await fetch('/api/targets', {
+    const res = await fetch('/api/targets/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        label,
-        threshold: parsedThreshold,
-        batch_size: parsedBatch,
-        is_fluid: isFluid,
-        enabled
+        group_id: groupId ?? null,
+        targets: items.map(item => ({
+          label: item.label,
+          threshold: parsedThreshold,
+          batch_size: parsedBatch,
+          is_fluid: item.is_fluid,
+          enabled
+        }))
       })
     })
     if (!res.ok) throw new Error()
     isDirty = true
-    await fetchTargets()
-    pendingAdd = null
+    await Promise.all([fetchTargets(), fetchGroups()])
+    pendingAdds = []
     render()
+    if (items.length > 1) showToast(`Added ${items.length} items.`, 'success')
   } catch {
     showToast(msg.addFailed, 'error')
   }
@@ -279,12 +285,15 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
         threshold: old?.threshold ?? null,
         batch_size: old?.batch_size ?? 1,
         is_fluid: newIsFluid,
-        enabled: old?.enabled !== 0
+        enabled: old?.enabled !== 0,
+        // Swapping the item on a grouped row used to drop it out of its group,
+        // because a swap is a delete plus an add.
+        group_id: old?.group_id ?? null
       })
     })
     if (!res2.ok) throw new Error()
     isDirty = true
-    await fetchTargets()
+    await Promise.all([fetchTargets(), fetchGroups()])
     render()
   } catch {
     showToast(msg.saveFailed, 'error')
@@ -292,7 +301,12 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
 }
 
 
-function openItemPicker(onSelect) {
+/**
+ * Item picker. onSelect gets an array -- one entry for a plain click, or every
+ * shift-clicked item when picking a run of them. multi:false keeps the old
+ * single-shot behaviour for swapping the item on an existing row.
+ */
+function openItemPicker(onSelect, { multi = true } = {}) {
   const overlay = document.createElement('div')
   overlay.className = 'picker-overlay'
   overlay.innerHTML = `
@@ -302,24 +316,51 @@ function openItemPicker(onSelect) {
         <button id="picker-close">X</button>
       </div>
       <div id="picker-grid" class="picker-grid"></div>
+      ${multi ? `
+        <div class="picker-footer">
+          <span class="picker-hint">Shift-click to pick several</span>
+          <span id="picker-count" class="picker-count"></span>
+          <button id="picker-done" disabled>Add selected</button>
+        </div>` : ''}
     </div>
   `
   document.body.appendChild(overlay)
 
   const searchInput = overlay.querySelector('#picker-search')
   const grid = overlay.querySelector('#picker-grid')
+  const selected = new Map()
+
+  function updateFooter() {
+    const count = overlay.querySelector('#picker-count')
+    const done = overlay.querySelector('#picker-done')
+    if (!count || !done) return
+    count.textContent = selected.size ? `${selected.size} selected` : ''
+    done.disabled = selected.size === 0
+    done.textContent = selected.size > 1 ? `Add ${selected.size} items` : 'Add selected'
+  }
 
   function renderResults(items) {
     grid.innerHTML = items.slice(0, 64).map(i => `
-      <div class="picker-item" data-label="${i.label}" data-fluid="${i.is_fluid}" title="${i.label}">
+      <div class="picker-item ${selected.has(i.label) ? 'picker-item-selected' : ''}"
+           data-label="${i.label}" data-fluid="${i.is_fluid}" title="${i.label}">
         ${iconHtml(i.x, i.y)}
         <span class="picker-item-name">${i.label}</span>
       </div>
     `).join('')
 
     grid.querySelectorAll('.picker-item').forEach(el => {
-      el.onclick = () => {
-        onSelect({ label: el.dataset.label, is_fluid: el.dataset.fluid === 'true' })
+      el.onclick = (e) => {
+        const item = { label: el.dataset.label, is_fluid: el.dataset.fluid === 'true' }
+        if (multi && (e.shiftKey || selected.size > 0)) {
+          // Once a selection exists, plain clicks keep adding to it -- holding
+          // shift for every item of a long run is tedious.
+          if (selected.has(item.label)) selected.delete(item.label)
+          else selected.set(item.label, item)
+          el.classList.toggle('picker-item-selected', selected.has(item.label))
+          updateFooter()
+          return
+        }
+        onSelect([item])
         overlay.remove()
       }
     })
@@ -336,6 +377,21 @@ function openItemPicker(onSelect) {
 
   search('')
   searchInput.addEventListener('input', () => search(searchInput.value.trim()))
+
+  const done = overlay.querySelector('#picker-done')
+  if (done) {
+    done.onclick = () => {
+      onSelect([...selected.values()])
+      overlay.remove()
+    }
+  }
+  // Enter commits the selection so a search-shift-click-search run never needs the mouse.
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && selected.size) {
+      onSelect([...selected.values()])
+      overlay.remove()
+    }
+  })
 
   overlay.querySelector('#picker-close').onclick = () => overlay.remove()
   overlay.onclick = e => { if (e.target === overlay) overlay.remove() }
@@ -890,11 +946,23 @@ function setupBracketDrag(container) {
     // only the gestures that *change* a group need Custom.
     cell.addEventListener('click', (e) => {
       if (!ORDERED_MODES.includes(currentSort)) return
-      if (!cell.classList.contains('bracket-collapse-zone')) return
       const row = cell.closest('tr')
-      const g = findGroup(parseInt(row.dataset.groupId))
+
+      if (cell.classList.contains('bracket-collapse-zone')) {
+        const g = findGroup(parseInt(row.dataset.groupId))
+        if (!g) return
+        patchGroup(g.id, { collapsed: false })
+        renderTable()
+        return
+      }
+
+      // Clicking the bracket line beside an expanded group folds it up. In
+      // Custom the drag machinery below already does this on mouseup; this is
+      // what makes it work in Default too, where expanding always did.
+      if (currentSort === 'custom' || !row?.dataset.row) return
+      const g = loadGroups().find(gr => gr.labels.includes(row.dataset.row))
       if (!g) return
-      patchGroup(g.id, { collapsed: false })
+      patchGroup(g.id, { collapsed: true })
       renderTable()
     })
 
@@ -1104,9 +1172,10 @@ function renderTable() {
   container.querySelectorAll('[data-change]').forEach(slot => {
     slot.addEventListener('click', () => {
       const label = slot.dataset.change
-      openItemPicker(({ label: newLabel, is_fluid }) => {
+      // Swapping the item on a row is inherently one-for-one.
+      openItemPicker(([{ label: newLabel, is_fluid }]) => {
         if (newLabel !== label) changeTargetItem(label, newLabel, is_fluid)
-      })
+      }, { multi: false })
     })
   })
 
@@ -1217,6 +1286,20 @@ function renderTable() {
     row.addEventListener('mousedown', (e) => {
       dragAllowed = !!e.target.closest('.grab-handle')
     })
+
+    // Clicking the handle without dragging opens the group -- the same gesture
+    // the bracket column already answers to. A real drag fires dragstart/dragend
+    // instead of click, so reordering still works.
+    const handle = row.querySelector('.grab-handle')
+    if (handle) {
+      handle.addEventListener('click', () => {
+        if (!ORDERED_MODES.includes(currentSort)) return
+        const g = findGroup(parseInt(row.dataset.groupId))
+        if (!g) return
+        patchGroup(g.id, { collapsed: false })
+        renderTable()
+      })
+    }
     row.setAttribute('draggable', 'true')
     row.addEventListener('dragstart', (e) => {
       if (!ORDERED_MODES.includes(currentSort)) { e.preventDefault(); return }
@@ -1242,13 +1325,32 @@ function renderAddPanel() {
   const container = document.getElementById('add-container')
   if (!container) return
 
-  const slotHtml = pendingAdd
-    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${pendingAdd.label}</span></div>`
-    : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
+  const groups = loadGroups()
+  // A group that vanished (members deleted, bracket removed) must not linger as
+  // the selected destination.
+  if (addDefaults.group_id !== null && !groups.some(g => g.id === addDefaults.group_id)) {
+    addDefaults.group_id = null
+  }
+  const destination = groups.find(g => g.id === addDefaults.group_id) ?? null
+
+  const slotHtml = pendingAdds.length === 0
+    ? `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
+    : pendingAdds.length === 1
+      ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdds[0].x, pendingAdds[0].y)}<span>${pendingAdds[0].label}</span></div>`
+      : `<div class="item-slot item-slot-pick" id="add-slot" title="${pendingAdds.map(p => p.label).join(', ')}">
+           ${pendingAdds.slice(0, 6).map(p => iconHtml(p.x, p.y)).join('')}
+           <span>${pendingAdds.length} items</span>
+         </div>`
 
   const threshVal = addDefaults.threshold != null ? formatShort(addDefaults.threshold) : ''
   const batchVal = addDefaults.batch_size != null ? formatShort(addDefaults.batch_size) : '1'
   const addEnabled = addDefaults.enabled
+
+  // The button says where things are going, so the destination is never a
+  // surprise -- and it stays selected, so a run of items is one click each.
+  const addLabel = pendingAdds.length > 1
+    ? (destination ? `Add ${pendingAdds.length} to ${escapeHtml(destination.name)}` : `Add ${pendingAdds.length} items`)
+    : (destination ? `Add to ${escapeHtml(destination.name)}` : 'Add')
 
   container.innerHTML = `
     <div class="inventory-title">Add new item</div>
@@ -1267,8 +1369,15 @@ function renderAddPanel() {
       <div class="add-field-cell">
         <input id="add-batch" type="text" placeholder="1" value="${batchVal}">
       </div>
+      ${groups.length ? `
       <div class="add-field-cell">
-        <button id="add-btn" ${pendingAdd ? '' : 'disabled'}>Add</button>
+        <select id="add-group" title="Drop the new items straight into a group">
+          <option value="">No group</option>
+          ${groups.map(g => `<option value="${g.id}" ${g.id === addDefaults.group_id ? 'selected' : ''}>${escapeHtml(g.name)}</option>`).join('')}
+        </select>
+      </div>` : ''}
+      <div class="add-field-cell">
+        <button id="add-btn" ${pendingAdds.length ? '' : 'disabled'}>${addLabel}</button>
       </div>
     </div>
   `
@@ -1287,14 +1396,12 @@ function renderAddPanel() {
       if (input.value === '') {
         if (field === 'batch_size') { input.value = savedValue; return }
         addDefaults[field] = null
-        if (pendingAdd) pendingAdd[field] = null
         return
       }
       let parsed = parseAmount(input.value)
       if (parsed === null) { showToast('Invalid format', 'error'); input.value = savedValue; return }
       if (parsed > 9000000000000000) parsed = 9000000000000000
       addDefaults[field] = parsed
-      if (pendingAdd) pendingAdd[field] = parsed
       input.value = formatShort(parsed)
     })
     input.addEventListener('keydown', e => {
@@ -1304,20 +1411,29 @@ function renderAddPanel() {
   })
 
   document.getElementById('add-slot').onclick = () => {
-    openItemPicker(item => {
-      const reg = registry.find(i => i.label === item.label)
-      pendingAdd = { ...item, x: reg?.x, y: reg?.y, ...addDefaults }
+    openItemPicker(items => {
+      pendingAdds = items.map(item => {
+        const reg = registry.find(i => i.label === item.label)
+        return { ...item, x: reg?.x, y: reg?.y }
+      })
       renderAddPanel()
     })
   }
 
   document.getElementById('add-toggle').onclick = () => {
     addDefaults.enabled = !addDefaults.enabled
-    if (pendingAdd) pendingAdd.enabled = addDefaults.enabled
     renderAddPanel()
   }
 
-  if (pendingAdd) {
+  const groupSelect = document.getElementById('add-group')
+  if (groupSelect) {
+    groupSelect.onchange = () => {
+      addDefaults.group_id = groupSelect.value === '' ? null : Number(groupSelect.value)
+      renderAddPanel()
+    }
+  }
+
+  if (pendingAdds.length) {
     document.getElementById('add-btn').onclick = () => {
       const threshStr = document.getElementById('add-threshold').value
       const batchStr = document.getElementById('add-batch').value || '1'
@@ -1329,7 +1445,7 @@ function renderAddPanel() {
         showToast('Invalid batch size format', 'error')
         return
       }
-      addTarget(pendingAdd.label, threshStr, batchStr, pendingAdd.is_fluid, addDefaults.enabled)
+      addTargets(pendingAdds, threshStr, batchStr, addDefaults.enabled, addDefaults.group_id)
     }
   }
 }
