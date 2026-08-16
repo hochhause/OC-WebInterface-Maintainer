@@ -473,6 +473,49 @@ tr.group-collapsed-row:hover {
   white-space: nowrap;
 }
 
+/* Multi-select in the item picker */
+.picker-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid #333;
+}
+
+.picker-hint {
+  color: #777;
+  font-size: 0.8rem;
+}
+
+.picker-count {
+  color: #e8e060;
+  font-size: 0.8rem;
+  margin-left: auto;
+}
+
+.picker-item-selected {
+  outline: 2px solid #55ff55;
+  background: rgba(60, 140, 80, 0.35);
+}
+
+.add-field-cell select {
+  background: #222;
+  color: #fff;
+  border: 2px solid #555;
+  padding: 4px 8px;
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+  cursor: pointer;
+  /* A select sizes itself to its longest option, and a long group name would
+     push the Add button onto its own line. */
+  width: 150px;
+}
+
+.add-field-cell select:focus {
+  border-color: #aaa;
+}
+
 .group-schedule-badge {
   color: #aaa;
   font-size: 0.8em;

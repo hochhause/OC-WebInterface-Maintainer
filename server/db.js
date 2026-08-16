@@ -178,6 +178,44 @@ export function upsertTarget(networkId, target) {
   })
 }
 
+/**
+ * Adds a batch of targets in one transaction, optionally all into one group.
+ * The website's picker can select many items at once, and one request per item
+ * would both fight the rate limiter and leave a half-finished list behind if it
+ * lost partway.
+ */
+export function addTargets(networkId, targets, groupId = null) {
+  // Checked before the transaction opens, not inside it: returning early from a
+  // transaction body still commits, so a late "unknown group" would have left
+  // the targets created behind a 404.
+  if (groupId !== null && !q.getGroup.get(networkId, groupId)) return null
+  return db.transaction(() => {
+    for (const target of targets) upsertTarget(networkId, target)
+    if (groupId === null) return targets.length
+    for (const target of targets) q.setMembership.run(groupId, networkId, target.label)
+    reorderAround(networkId, groupId, targets.map(t => t.label))
+    return targets.length
+  })()
+}
+
+export function groupExists(networkId, id) {
+  return !!q.getGroup.get(networkId, id)
+}
+
+// Places the given labels immediately after the group's other members, so the
+// bracket the table draws stays one contiguous run.
+function reorderAround(networkId, groupId, labels) {
+  const moving = new Set(labels)
+  const rows = q.getTargets.all(networkId)
+  const movers = rows.filter(r => moving.has(r.label))
+  const rest = rows.filter(r => !moving.has(r.label))
+  const lastMember = rest.map(r => r.group_id).lastIndexOf(groupId)
+  const arranged = lastMember === -1
+    ? [...rest, ...movers]
+    : [...rest.slice(0, lastMember + 1), ...movers, ...rest.slice(lastMember + 1)]
+  arranged.forEach((r, i) => q.setPosition.run(i + 1, networkId, r.label))
+}
+
 export function deleteTarget(networkId, label) {
   db.transaction(() => {
     q.deleteTarget.run(networkId, label)
@@ -247,6 +285,29 @@ export function replaceGroups(networkId, incoming) {
     }
     pruneGroups(networkId)
   })()
+}
+
+/**
+ * Drops an existing target into a group and moves it next to that group's other
+ * members, so the bracket stays contiguous. Positions are re-derived from the
+ * current order rather than patched, which also fixes up a network that never
+ * had an explicit order (everything still sitting on position 0).
+ */
+export function setTargetGroup(networkId, label, groupId) {
+  if (!q.getGroup.get(networkId, groupId)) return false
+  db.transaction(() => {
+    q.setMembership.run(groupId, networkId, label)
+    const rows = q.getTargets.all(networkId)
+    const moved = rows.find(r => r.label === label)
+    if (!moved) return
+    const rest = rows.filter(r => r.label !== label)
+    const lastMember = rest.map(r => r.group_id).lastIndexOf(groupId)
+    const arranged = lastMember === -1
+      ? [...rest, moved]
+      : [...rest.slice(0, lastMember + 1), moved, ...rest.slice(lastMember + 1)]
+    arranged.forEach((r, i) => q.setPosition.run(i + 1, networkId, r.label))
+  })()
+  return true
 }
 
 export function updateGroup(networkId, id, patch) {

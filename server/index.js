@@ -4,7 +4,7 @@ import { createServer } from 'http'
 import { randomBytes } from 'crypto'
 import { WebSocketServer } from 'ws'
 import {
-  getTargets, upsertTarget, deleteTarget, setTargetOrder,
+  getTargets, upsertTarget, addTargets, deleteTarget, setTargetOrder, setTargetGroup, groupExists,
   getGroups, replaceGroups, updateGroup, deleteGroup, bumpRunSeq,
   getStock, updateStock,
   getSettings, setSettings,
@@ -363,9 +363,53 @@ app.post('/api/targets', browserAuth, (req, res) => {
   }
   const target = parseTarget(req.body)
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
+
+  // Optional destination group, so adding a run of items to one group does not
+  // mean adding them all and then re-drawing the bracket. Validated before the
+  // target is written: a rejected request must not leave one behind.
+  let groupId = null
+  if (req.body.group_id !== null && req.body.group_id !== undefined && req.body.group_id !== '') {
+    groupId = Number(req.body.group_id)
+    if (!Number.isInteger(groupId)) return res.status(400).json({ error: 'invalid group' })
+    if (!groupExists(req.networkId, groupId)) return res.status(404).json({ error: 'unknown group' })
+  }
+
   upsertTarget(req.networkId, target)
-  broadcastTargets(req.networkId)
+  if (groupId !== null) setTargetGroup(req.networkId, target.label, groupId)
+
+  broadcastLayout(req.networkId)
   res.json({ ok: true })
+})
+
+// Many items in one shot, from the picker's multi-select.
+app.post('/api/targets/bulk', browserAuth, (req, res) => {
+  const incoming = req.body?.targets
+  if (!Array.isArray(incoming) || incoming.length === 0) {
+    return res.status(400).json({ error: 'targets array required' })
+  }
+  if (incoming.length > 500) return res.status(400).json({ error: 'too many targets' })
+
+  const parsed = []
+  for (const raw of incoming) {
+    if (!raw?.label || typeof raw.label !== 'string' || !raw.label.trim()) {
+      return res.status(400).json({ error: 'every target needs a label' })
+    }
+    const target = parseTarget(raw)
+    if (!target) return res.status(400).json({ error: `invalid values for ${raw.label}` })
+    parsed.push(target)
+  }
+
+  let groupId = null
+  if (req.body.group_id !== null && req.body.group_id !== undefined && req.body.group_id !== '') {
+    groupId = Number(req.body.group_id)
+    if (!Number.isInteger(groupId)) return res.status(400).json({ error: 'invalid group' })
+  }
+
+  if (addTargets(req.networkId, parsed, groupId) === null) {
+    return res.status(404).json({ error: 'unknown group' })
+  }
+  broadcastLayout(req.networkId)
+  res.json({ added: parsed.length })
 })
 
 app.put('/api/targets/:label', browserAuth, (req, res) => {
